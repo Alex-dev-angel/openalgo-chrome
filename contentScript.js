@@ -1,4 +1,4 @@
-// OpenAlgo Options Scalping Extension v2.0
+// OpenAlgo Options Scalping Extension v2.1
 // Global state
 let state = {
   action: 'BUY',
@@ -14,7 +14,12 @@ let state = {
   underlyingLtp: 0,
   underlyingPrevClose: 0,
   optionLtp: 0,
-  optionPrevClose: 0
+  optionPrevClose: 0,
+  theme: 'dark',
+  refreshMode: 'auto',
+  refreshIntervalSec: 5,
+  refreshAreas: { funds: true, underlying: true, strikes: true },
+  loading: { funds: false, underlying: false, strikes: false }
 };
 
 let expiryList = [];
@@ -39,7 +44,11 @@ async function init() {
 // Load settings from chrome storage
 function loadSettings() {
   return new Promise((resolve) => {
-    chrome.storage.sync.get(['hostUrl', 'apiKey', 'symbols', 'activeSymbolId', 'uiMode', 'symbol', 'exchange', 'product', 'quantity'], (data) => {
+    chrome.storage.sync.get(['hostUrl', 'apiKey', 'symbols', 'activeSymbolId', 'uiMode', 'symbol', 'exchange', 'product', 'quantity', 'theme', 'refreshMode', 'refreshIntervalSec', 'refreshAreas'], (data) => {
+      state.theme = data.theme || 'dark';
+      state.refreshMode = data.refreshMode || 'auto';
+      state.refreshIntervalSec = data.refreshIntervalSec || 5;
+      state.refreshAreas = data.refreshAreas || { funds: true, underlying: true, strikes: true };
       resolve({
         hostUrl: data.hostUrl || 'http://127.0.0.1:5000',
         apiKey: data.apiKey || '',
@@ -121,7 +130,11 @@ async function apiCall(endpoint, data) {
 async function fetchUnderlyingQuote() {
   const symbol = getActiveSymbol();
   if (!symbol) return;
+  state.loading.underlying = true;
+  showLoadingIndicator('underlying');
   const result = await apiCall('/api/v1/quotes', { symbol: symbol.symbol, exchange: symbol.exchange });
+  state.loading.underlying = false;
+  hideLoadingIndicator('underlying');
   if (result.status === 'success' && result.data) {
     state.underlyingLtp = result.data.ltp || 0;
     state.underlyingPrevClose = result.data.prev_close || 0;
@@ -131,7 +144,11 @@ async function fetchUnderlyingQuote() {
 
 // Fetch funds
 async function fetchFunds() {
+  state.loading.funds = true;
+  showLoadingIndicator('funds');
   const result = await apiCall('/api/v1/funds', {});
+  state.loading.funds = false;
+  hideLoadingIndicator('funds');
   if (result.status === 'success' && result.data) {
     const available = parseFloat(result.data.availablecash) || 0;
     const realized = parseFloat(result.data.m2mrealized) || 0;
@@ -176,11 +193,14 @@ async function fetchStrikeChain() {
     })
   );
 
+  state.loading.strikes = true;
+  showLoadingIndicator('strikes');
   const results = await Promise.all(promises);
   strikeChain = offsets.map((offset, i) => {
     const r = results[i];
     if (r.status === 'success') {
-      const strikeMatch = r.symbol.match(/(\d+)(CE|PE)$/);
+      // Parse strike from option symbol format: [BaseSymbol][DDMMMYY][Strike][CE/PE]
+      const strikeMatch = r.symbol.match(/^[A-Z]+(?:\d{2}[A-Z]{3}\d{2})(\d+)(?=CE$|PE$)/);
       return {
         offset,
         symbol: r.symbol,
@@ -217,6 +237,8 @@ async function fetchStrikeLTPs() {
       }
     });
   }
+  state.loading.strikes = false;
+  hideLoadingIndicator('strikes');
   updateStrikeDropdown();
   updateSelectedOptionLTP();
 }
@@ -333,15 +355,24 @@ function makeLegacyApiCall(url, data, actionText) {
 
 // Start data refresh interval
 function startDataRefresh() {
-  fetchUnderlyingQuote();
-  fetchFunds();
+  if (state.refreshAreas.underlying) fetchUnderlyingQuote();
+  if (state.refreshAreas.funds) fetchFunds();
   fetchExpiry();
   if (refreshInterval) clearInterval(refreshInterval);
-  refreshInterval = setInterval(() => {
-    fetchUnderlyingQuote();
-    fetchFunds();
-    if (strikeChain.length > 0) fetchStrikeLTPs();
-  }, 5000);
+  if (state.refreshMode === 'auto') {
+    refreshInterval = setInterval(() => {
+      if (state.refreshAreas.underlying) fetchUnderlyingQuote();
+      if (state.refreshAreas.funds) fetchFunds();
+      if (state.refreshAreas.strikes && strikeChain.length > 0) fetchStrikeLTPs();
+    }, state.refreshIntervalSec * 1000);
+  }
+}
+
+// Manual refresh
+function manualRefresh() {
+  if (state.refreshAreas.underlying) fetchUnderlyingQuote();
+  if (state.refreshAreas.funds) fetchFunds();
+  if (state.refreshAreas.strikes && strikeChain.length > 0) fetchStrikeLTPs();
 }
 
 // Show notification
@@ -357,8 +388,8 @@ function showNotification(message, type) {
 function updateUnderlyingDisplay() {
   const el = document.getElementById('oa-underlying-ltp');
   if (!el) return;
-  const { change, changePercent, arrow, sign, colorClass } = getChangeDisplay(state.underlyingLtp, state.underlyingPrevClose);
-  el.innerHTML = `<span class="${colorClass}">${formatNumber(state.underlyingLtp)} ${arrow} ${sign}${formatNumber(change)} (${sign}${changePercent.toFixed(2)}%)</span>`;
+  const { change, changePercent, sign, colorClass } = getChangeDisplay(state.underlyingLtp, state.underlyingPrevClose);
+  el.innerHTML = `<span class="oa-ltp-value ${colorClass}">${formatNumber(state.underlyingLtp)}</span> <span class="oa-change-text">${sign}${formatNumber(change)} (${sign}${changePercent.toFixed(2)}%)</span>`;
 }
 
 function updateFundsDisplay(available, todayPL) {
@@ -390,15 +421,15 @@ function updateExpirySlider() {
 function updateStrikeDropdown() {
   const list = document.getElementById('oa-strike-list');
   if (!list) return;
+  const optType = state.optionType;
   list.innerHTML = strikeChain.map(s => {
-    const { sign, colorClass } = getChangeDisplay(s.ltp, s.prevClose);
-    const change = s.ltp - s.prevClose;
+    const { colorClass } = getChangeDisplay(s.ltp, s.prevClose);
     const isATM = s.offset === 'ATM';
     const isSelected = s.offset === state.selectedOffset;
     return `<div class="oa-strike-row ${isATM ? 'atm' : ''} ${isSelected ? 'selected' : ''}" data-offset="${s.offset}" data-strike="${s.strike}">
       <span class="oa-moneyness">${s.offset}</span>
-      <span class="oa-strike">${s.strike}</span>
-      <span class="oa-ltp ${colorClass}">${formatNumber(s.ltp)} ${sign}${formatNumber(Math.abs(change))}</span>
+      <span class="oa-strike">${s.strike} <span class="oa-opt-badge ${optType === 'CE' ? 'ce' : 'pe'}">${optType}</span></span>
+      <span class="oa-ltp ${colorClass}">${formatNumber(s.ltp)}</span>
     </div>`;
   }).join('');
   list.querySelectorAll('.oa-strike-row').forEach(row => {
@@ -425,7 +456,8 @@ function updatePriceDisplay() {
     el.disabled = true;
   } else {
     el.disabled = false;
-    if (state.price === 0) state.price = state.optionLtp;
+    // Auto-update price to current strike LTP when strike is selected
+    state.price = state.optionLtp;
     el.value = state.price.toFixed(2);
   }
   updateOrderButton();
@@ -464,6 +496,7 @@ function injectUI() {
 
 function buildScalpingUI() {
   const symbol = getActiveSymbol();
+  const themeIcon = state.theme === 'dark' ? '☀️' : '🌙';
   return `
     <div class="oa-drag-handle"></div>
     <div class="oa-header">
@@ -473,6 +506,8 @@ function buildScalpingUI() {
       </select>
       <span id="oa-underlying-ltp" class="oa-ltp-display">--</span>
       <span id="oa-funds" class="oa-funds">--</span>
+      <button id="oa-theme-btn" class="oa-icon-btn" title="Toggle theme">${themeIcon}</button>
+      <button id="oa-refresh-btn" class="oa-icon-btn" title="Refresh settings">🔄</button>
       <button id="oa-settings-btn" class="oa-icon-btn">⋮</button>
     </div>
     <div class="oa-controls">
@@ -485,15 +520,20 @@ function buildScalpingUI() {
         <button id="oa-lots-inc" class="oa-lot-btn">+</button>
         <span class="oa-lots-label">LOTS</span>
       </div>
-      <button id="oa-ordertype-btn" class="oa-toggle">${state.orderType}</button>
+      <button id="oa-ordertype-btn" class="oa-toggle oa-ordertype-fixed">${state.orderType}</button>
       <input id="oa-price" type="number" class="oa-price-input" value="0" step="0.05">
       <button id="oa-order-btn" class="oa-order-btn buy">BUY @ --</button>
     </div>
     <div id="oa-strike-dropdown" class="oa-strike-dropdown hidden">
-      <div id="oa-expiry-slider" class="oa-expiry-slider"></div>
+      <div class="oa-expiry-container">
+        <button id="oa-expiry-left" class="oa-expiry-arrow">‹</button>
+        <div id="oa-expiry-slider" class="oa-expiry-slider"></div>
+        <button id="oa-expiry-right" class="oa-expiry-arrow">›</button>
+      </div>
       <div class="oa-strike-header"><span>Moneyness</span><span>Strike</span><span>LTP</span></div>
       <div id="oa-strike-list" class="oa-strike-list"></div>
     </div>
+    <div id="oa-refresh-panel" class="oa-refresh-panel hidden"></div>
     <div id="oa-settings-panel" class="oa-settings-panel hidden"></div>
   `;
 }
@@ -577,6 +617,16 @@ function setupScalpingEvents(container) {
     else placePlaceOrder();
   });
 
+  // Theme toggle
+  container.querySelector('#oa-theme-btn')?.addEventListener('click', () => toggleTheme());
+
+  // Refresh button
+  container.querySelector('#oa-refresh-btn')?.addEventListener('click', () => toggleRefreshPanel());
+
+  // Expiry slider arrows
+  container.querySelector('#oa-expiry-left')?.addEventListener('click', () => scrollExpiry(-1));
+  container.querySelector('#oa-expiry-right')?.addEventListener('click', () => scrollExpiry(1));
+
   // Settings button
   container.querySelector('#oa-settings-btn')?.addEventListener('click', () => toggleSettingsPanel());
 }
@@ -587,6 +637,106 @@ function setupQuickEvents(container) {
   container.querySelector('#se-btn')?.addEventListener('click', () => placeLegacyOrder('SELL'));
   container.querySelector('#sx-btn')?.addEventListener('click', () => placeLegacySmartOrder('SELL'));
   container.querySelector('#oa-settings-btn')?.addEventListener('click', () => toggleSettingsPanel());
+}
+
+// Theme toggle
+function toggleTheme() {
+  state.theme = state.theme === 'dark' ? 'light' : 'dark';
+  applyTheme(state.theme);
+  saveSettings({ theme: state.theme });
+  const btn = document.getElementById('oa-theme-btn');
+  if (btn) btn.textContent = state.theme === 'dark' ? '☀️' : '🌙';
+}
+
+function applyTheme(theme) {
+  const container = document.getElementById('openalgo-controls');
+  if (!container) return;
+  if (theme === 'light') {
+    container.classList.add('oa-light-theme');
+    container.classList.remove('oa-dark-theme');
+  } else {
+    container.classList.add('oa-dark-theme');
+    container.classList.remove('oa-light-theme');
+  }
+}
+
+// Refresh panel
+function toggleRefreshPanel() {
+  const panel = document.getElementById('oa-refresh-panel');
+  if (!panel) return;
+  const isHidden = panel.classList.contains('hidden');
+  if (isHidden) {
+    panel.innerHTML = buildRefreshPanel();
+    setupRefreshEvents(panel);
+  }
+  panel.classList.toggle('hidden');
+}
+
+function buildRefreshPanel() {
+  return `
+    <div class="oa-refresh-content">
+      <h4>Refresh Settings</h4>
+      <div class="oa-form-group">
+        <label>Mode</label>
+        <select id="oa-refresh-mode">
+          <option value="manual" ${state.refreshMode === 'manual' ? 'selected' : ''}>Manual</option>
+          <option value="auto" ${state.refreshMode === 'auto' ? 'selected' : ''}>Auto</option>
+        </select>
+      </div>
+      <div class="oa-form-group" id="oa-interval-group" ${state.refreshMode === 'manual' ? 'style="display:none"' : ''}>
+        <label>Interval (sec)</label>
+        <input id="oa-refresh-interval" type="number" min="3" max="60" value="${state.refreshIntervalSec}">
+      </div>
+      <div class="oa-form-group">
+        <label>Data to Refresh</label>
+        <div class="oa-checkbox-group">
+          <label><input type="checkbox" id="oa-ref-funds" ${state.refreshAreas.funds ? 'checked' : ''}> Funds</label>
+          <label><input type="checkbox" id="oa-ref-underlying" ${state.refreshAreas.underlying ? 'checked' : ''}> Underlying</label>
+          <label><input type="checkbox" id="oa-ref-strikes" ${state.refreshAreas.strikes ? 'checked' : ''}> Strikes</label>
+        </div>
+      </div>
+      <button id="oa-refresh-save" class="oa-btn primary">Save</button>
+      <button id="oa-refresh-now" class="oa-btn success">Refresh Now</button>
+    </div>
+  `;
+}
+
+function setupRefreshEvents(panel) {
+  panel.querySelector('#oa-refresh-mode')?.addEventListener('change', (e) => {
+    const intGroup = panel.querySelector('#oa-interval-group');
+    if (intGroup) intGroup.style.display = e.target.value === 'manual' ? 'none' : 'block';
+  });
+  panel.querySelector('#oa-refresh-save')?.addEventListener('click', async () => {
+    state.refreshMode = panel.querySelector('#oa-refresh-mode').value;
+    state.refreshIntervalSec = parseInt(panel.querySelector('#oa-refresh-interval').value) || 5;
+    state.refreshAreas = {
+      funds: panel.querySelector('#oa-ref-funds').checked,
+      underlying: panel.querySelector('#oa-ref-underlying').checked,
+      strikes: panel.querySelector('#oa-ref-strikes').checked
+    };
+    await saveSettings({ refreshMode: state.refreshMode, refreshIntervalSec: state.refreshIntervalSec, refreshAreas: state.refreshAreas });
+    startDataRefresh();
+    toggleRefreshPanel();
+    showNotification('Refresh settings saved!', 'success');
+  });
+  panel.querySelector('#oa-refresh-now')?.addEventListener('click', () => manualRefresh());
+}
+
+// Expiry slider scroll
+function scrollExpiry(direction) {
+  const slider = document.getElementById('oa-expiry-slider');
+  if (slider) slider.scrollBy({ left: direction * 80, behavior: 'smooth' });
+}
+
+// Loading indicators
+function showLoadingIndicator(area) {
+  const el = document.getElementById(`oa-${area === 'underlying' ? 'underlying-ltp' : area}`);
+  if (el) el.classList.add('oa-loading');
+}
+
+function hideLoadingIndicator(area) {
+  const el = document.getElementById(`oa-${area === 'underlying' ? 'underlying-ltp' : area}`);
+  if (el) el.classList.remove('oa-loading');
 }
 
 // Settings panel
@@ -633,11 +783,15 @@ function buildSymbolSettings() {
     <div id="oa-symbol-list">
       ${settings.symbols.map(s => `
         <div class="oa-symbol-item" data-id="${s.id}">
-          <span>${s.symbol} (${s.exchange})</span>
-          <button class="oa-remove-symbol">✕</button>
+          <span class="oa-symbol-info">${s.symbol} (${s.exchange})</span>
+          <div class="oa-symbol-actions">
+            <button class="oa-edit-symbol" title="Edit">✏️</button>
+            <button class="oa-remove-symbol" title="Remove">✕</button>
+          </div>
         </div>
       `).join('')}
     </div>
+    <div id="oa-edit-symbol-form" class="oa-edit-form hidden"></div>
     <div class="oa-add-symbol">
       <input id="oa-new-symbol" type="text" placeholder="Symbol (e.g. NIFTY)">
       <select id="oa-new-exchange">
@@ -721,6 +875,43 @@ function setupSettingsEvents(panel) {
     });
   });
 
+  // Edit symbol
+  panel.querySelectorAll('.oa-edit-symbol').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      const id = e.target.closest('.oa-symbol-item').dataset.id;
+      const sym = settings.symbols.find(s => s.id === id);
+      if (!sym) return;
+      const form = panel.querySelector('#oa-edit-symbol-form');
+      form.classList.remove('hidden');
+      form.innerHTML = `
+        <div class="oa-edit-row">
+          <input id="oa-edit-name" type="text" value="${sym.symbol}" placeholder="Symbol">
+          <select id="oa-edit-exchange">
+            <option value="NSE_INDEX" ${sym.exchange === 'NSE_INDEX' ? 'selected' : ''}>NSE_INDEX</option>
+            <option value="NSE" ${sym.exchange === 'NSE' ? 'selected' : ''}>NSE</option>
+            <option value="BSE_INDEX" ${sym.exchange === 'BSE_INDEX' ? 'selected' : ''}>BSE_INDEX</option>
+            <option value="BSE" ${sym.exchange === 'BSE' ? 'selected' : ''}>BSE</option>
+          </select>
+          <select id="oa-edit-product">
+            <option value="MIS" ${sym.productType === 'MIS' ? 'selected' : ''}>MIS</option>
+            <option value="NRML" ${sym.productType === 'NRML' ? 'selected' : ''}>NRML</option>
+          </select>
+          <button id="oa-save-edit" class="oa-btn primary" data-id="${id}">Save</button>
+          <button id="oa-cancel-edit" class="oa-btn">Cancel</button>
+        </div>
+      `;
+      form.querySelector('#oa-save-edit')?.addEventListener('click', async () => {
+        sym.symbol = form.querySelector('#oa-edit-name').value.trim().toUpperCase();
+        sym.exchange = form.querySelector('#oa-edit-exchange').value;
+        sym.optionExchange = deriveOptionExchange(sym.exchange);
+        sym.productType = form.querySelector('#oa-edit-product').value;
+        await saveSettings({ symbols: settings.symbols });
+        location.reload();
+      });
+      form.querySelector('#oa-cancel-edit')?.addEventListener('click', () => form.classList.add('hidden'));
+    });
+  });
+
   // Save settings
   panel.querySelector('#oa-save-settings')?.addEventListener('click', async () => {
     const newSettings = {
@@ -771,65 +962,121 @@ function makeDraggable(el) {
 function injectStyles() {
   const style = document.createElement('style');
   style.textContent = `
-    .oa-container { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #1a1a2e; color: #eee; border-radius: 12px; box-shadow: 0 8px 32px rgba(0,0,0,0.4); padding: 12px; min-width: 420px; }
-    .oa-drag-handle { height: 4px; background: #444; border-radius: 2px; margin: -8px -8px 8px; cursor: move; }
-    .oa-header { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; flex-wrap: wrap; }
-    .oa-select { background: #2a2a4a; color: #fff; border: 1px solid #444; border-radius: 6px; padding: 6px 10px; font-weight: 600; }
-    .oa-ltp-display { font-size: 14px; font-weight: 600; }
-    .oa-funds { font-size: 12px; margin-left: auto; }
+    /* Base container - Compact sizing */
+    .oa-container { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #000; color: #eee; border-radius: 10px; box-shadow: 0 8px 32px rgba(0,0,0,0.5); padding: 8px; min-width: 360px; font-size: 11px; }
+    .oa-container.oa-dark-theme { background: #000; color: #eee; }
+    .oa-container.oa-light-theme { background: #fff; color: #222; box-shadow: 0 4px 20px rgba(0,0,0,0.15); }
+    .oa-light-theme .oa-select, .oa-light-theme .oa-toggle, .oa-light-theme .oa-strike-select, .oa-light-theme .oa-lot-btn, .oa-light-theme .oa-lots input, .oa-light-theme .oa-price-input { background: #f0f0f0; color: #222; border-color: #ccc; }
+    .oa-light-theme .oa-strike-dropdown, .oa-light-theme .oa-settings-panel, .oa-light-theme .oa-refresh-panel { background: #fff; border-color: #ddd; }
+    .oa-light-theme .oa-expiry-btn { background: #e8e8e8; color: #666; }
+    .oa-light-theme .oa-expiry-btn.active { background: #5c6bc0; color: #fff; }
+    .oa-light-theme .oa-strike-row:hover { background: #f5f5f5; }
+    .oa-light-theme .oa-strike-row.selected { background: #e3e8f0; }
+    .oa-light-theme .oa-strike-row.atm { background: #e8f5e9; }
+    .oa-light-theme .oa-form-group input, .oa-light-theme .oa-form-group select { background: #f5f5f5; color: #222; border-color: #ccc; }
+    .oa-light-theme .oa-symbol-item { background: #f0f0f0; }
+    .oa-drag-handle { height: 3px; background: #333; border-radius: 2px; margin: -4px -4px 6px; cursor: move; }
+    .oa-light-theme .oa-drag-handle { background: #ccc; }
+    
+    /* Header */
+    .oa-header { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; flex-wrap: wrap; }
+    .oa-select { background: #111; color: #fff; border: 1px solid #333; border-radius: 4px; padding: 4px 8px; font-weight: 600; font-size: 11px; }
+    .oa-ltp-display { font-size: 11px; font-weight: 600; display: flex; align-items: center; gap: 4px; }
+    .oa-ltp-value { font-weight: 700; }
+    .oa-change-text { color: #999; font-size: 10px; }
+    .oa-funds { font-size: 10px; margin-left: auto; }
     .positive { color: #00e676 !important; }
     .negative { color: #ff5252 !important; }
-    .oa-icon-btn { background: transparent; border: none; color: #888; font-size: 18px; cursor: pointer; padding: 4px 8px; }
+    .oa-icon-btn { background: transparent; border: none; color: #666; font-size: 14px; cursor: pointer; padding: 2px 6px; }
     .oa-icon-btn:hover { color: #fff; }
-    .oa-controls { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-    .oa-toggle { background: #333; color: #fff; border: none; border-radius: 6px; padding: 8px 14px; font-weight: 700; cursor: pointer; text-transform: uppercase; }
+    .oa-light-theme .oa-icon-btn { color: #999; }
+    .oa-light-theme .oa-icon-btn:hover { color: #333; }
+    
+    /* Controls row */
+    .oa-controls { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+    .oa-toggle { background: #222; color: #fff; border: none; border-radius: 4px; padding: 5px 10px; font-weight: 700; cursor: pointer; text-transform: uppercase; font-size: 10px; }
     .oa-toggle.buy { background: #00c853; }
     .oa-toggle.sell { background: #ff1744; }
-    .oa-strike-select { background: #2a2a4a; color: #fff; border: 1px solid #555; border-radius: 6px; padding: 8px 12px; cursor: pointer; min-width: 100px; }
-    .oa-lots { display: flex; align-items: center; gap: 4px; }
-    .oa-lot-btn { background: #333; color: #fff; border: none; border-radius: 4px; width: 28px; height: 28px; cursor: pointer; font-size: 16px; }
-    .oa-lots input { width: 40px; background: #2a2a4a; color: #fff; border: 1px solid #444; border-radius: 4px; text-align: center; padding: 4px; }
-    .oa-lots-label { font-size: 11px; color: #888; }
-    .oa-price-input { width: 70px; background: #2a2a4a; color: #fff; border: 1px solid #444; border-radius: 6px; padding: 8px; text-align: right; }
-    .oa-price-input:disabled { opacity: 0.6; }
-    .oa-order-btn { padding: 10px 16px; border: none; border-radius: 8px; font-weight: 700; cursor: pointer; text-transform: uppercase; }
+    .oa-ordertype-fixed { min-width: 55px; text-align: center; }
+    .oa-strike-select { background: #111; color: #fff; border: 1px solid #444; border-radius: 4px; padding: 5px 8px; cursor: pointer; min-width: 80px; font-size: 10px; }
+    .oa-lots { display: flex; align-items: center; gap: 2px; }
+    .oa-lot-btn { background: #222; color: #fff; border: none; border-radius: 3px; width: 22px; height: 22px; cursor: pointer; font-size: 14px; }
+    .oa-lots input { width: 32px; background: #111; color: #fff; border: 1px solid #333; border-radius: 3px; text-align: center; padding: 3px; font-size: 10px; }
+    .oa-lots-label { font-size: 9px; color: #666; }
+    .oa-price-input { width: 55px; background: #111; color: #fff; border: 1px solid #333; border-radius: 4px; padding: 5px; text-align: right; font-size: 10px; }
+    .oa-price-input:disabled { opacity: 0.5; }
+    .oa-order-btn { padding: 6px 12px; border: none; border-radius: 6px; font-weight: 700; cursor: pointer; text-transform: uppercase; font-size: 10px; }
     .oa-order-btn.buy { background: linear-gradient(135deg, #00c853, #00e676); color: #000; }
     .oa-order-btn.sell { background: linear-gradient(135deg, #ff1744, #ff5252); color: #fff; }
-    .oa-strike-dropdown { position: absolute; top: 100%; left: 0; right: 0; background: #1a1a2e; border: 1px solid #333; border-radius: 8px; margin-top: 4px; max-height: 300px; overflow: auto; z-index: 100; }
+    
+    /* Strike dropdown */
+    .oa-strike-dropdown { position: absolute; top: 100%; left: 0; right: 0; background: #000; border: 1px solid #222; border-radius: 6px; margin-top: 4px; max-height: 280px; overflow: hidden; z-index: 100; width: 240px; }
     .oa-strike-dropdown.hidden { display: none; }
-    .oa-expiry-slider { display: flex; gap: 6px; padding: 8px; overflow-x: auto; border-bottom: 1px solid #333; }
-    .oa-expiry-btn { background: #2a2a4a; color: #aaa; border: none; border-radius: 4px; padding: 6px 10px; font-size: 11px; cursor: pointer; white-space: nowrap; }
-    .oa-expiry-btn.active { background: #4a4a8a; color: #fff; }
-    .oa-strike-header { display: grid; grid-template-columns: 1fr 1fr 1.5fr; padding: 6px 10px; font-size: 10px; color: #666; border-bottom: 1px solid #333; }
-    .oa-strike-list { max-height: 200px; overflow-y: auto; }
-    .oa-strike-row { display: grid; grid-template-columns: 1fr 1fr 1.5fr; padding: 8px 10px; cursor: pointer; font-size: 12px; }
-    .oa-strike-row:hover { background: #2a2a4a; }
-    .oa-strike-row.selected { background: #3a3a6a; }
-    .oa-strike-row.atm { background: #2a3a4a; font-weight: 600; }
-    .oa-moneyness { color: #888; }
-    .oa-strike { color: #fff; }
-    .oa-ltp { text-align: right; }
-    .oa-settings-panel { position: absolute; top: 100%; left: 0; right: 0; background: #1a1a2e; border: 1px solid #333; border-radius: 8px; margin-top: 4px; z-index: 101; }
+    .oa-expiry-container { display: flex; align-items: center; border-bottom: 1px solid #222; }
+    .oa-expiry-arrow { background: transparent; border: none; color: #666; font-size: 16px; cursor: pointer; padding: 4px 6px; }
+    .oa-expiry-arrow:hover { color: #fff; }
+    .oa-expiry-slider { display: flex; gap: 4px; padding: 6px; overflow-x: auto; flex: 1; scrollbar-width: none; }
+    .oa-expiry-slider::-webkit-scrollbar { display: none; }
+    .oa-expiry-btn { background: #111; color: #888; border: none; border-radius: 3px; padding: 4px 8px; font-size: 9px; cursor: pointer; white-space: nowrap; }
+    .oa-expiry-btn.active { background: #3a3a6a; color: #fff; }
+    .oa-strike-header { display: grid; grid-template-columns: 0.8fr 1fr 0.6fr; padding: 4px 8px; font-size: 9px; color: #555; border-bottom: 1px solid #222; }
+    .oa-strike-list { max-height: 180px; overflow-y: auto; }
+    .oa-strike-row { display: grid; grid-template-columns: 0.8fr 1fr 0.6fr; padding: 5px 8px; cursor: pointer; font-size: 10px; }
+    .oa-strike-row:hover { background: #111; }
+    .oa-strike-row.selected { background: #1a2a4a; }
+    .oa-strike-row.atm { background: #0a2a1a; font-weight: 600; }
+    .oa-moneyness { color: #666; font-size: 9px; }
+    .oa-strike { color: #fff; display: flex; align-items: center; gap: 4px; }
+    .oa-opt-badge { font-size: 8px; padding: 1px 3px; border-radius: 2px; font-weight: 600; }
+    .oa-opt-badge.ce { background: #00c853; color: #000; }
+    .oa-opt-badge.pe { background: #ff1744; color: #fff; }
+    .oa-ltp { text-align: right; font-size: 10px; }
+    
+    /* Refresh panel */
+    .oa-refresh-panel { position: absolute; top: 100%; left: 0; right: 0; background: #000; border: 1px solid #222; border-radius: 6px; margin-top: 4px; z-index: 102; }
+    .oa-refresh-panel.hidden { display: none; }
+    .oa-refresh-content { padding: 10px; }
+    .oa-refresh-content h4 { margin: 0 0 8px; font-size: 11px; color: #888; }
+    .oa-checkbox-group { display: flex; flex-direction: column; gap: 4px; }
+    .oa-checkbox-group label { display: flex; align-items: center; gap: 6px; font-size: 10px; color: #ccc; cursor: pointer; }
+    .oa-checkbox-group input { width: 14px; height: 14px; }
+    
+    /* Settings panel */
+    .oa-settings-panel { position: absolute; top: 100%; left: 0; right: 0; background: #000; border: 1px solid #222; border-radius: 6px; margin-top: 4px; z-index: 101; max-height: 350px; overflow-y: auto; }
     .oa-settings-panel.hidden { display: none; }
-    .oa-settings-content { padding: 12px; }
-    .oa-settings-content h3 { margin: 0 0 12px; font-size: 14px; }
-    .oa-settings-content h4 { margin: 12px 0 8px; font-size: 12px; color: #888; }
-    .oa-form-group { margin-bottom: 10px; }
-    .oa-form-group label { display: block; font-size: 11px; color: #888; margin-bottom: 4px; }
-    .oa-form-group input, .oa-form-group select { width: 100%; background: #2a2a4a; color: #fff; border: 1px solid #444; border-radius: 4px; padding: 8px; box-sizing: border-box; }
-    .oa-symbol-list { max-height: 100px; overflow-y: auto; margin-bottom: 8px; }
-    .oa-symbol-item { display: flex; justify-content: space-between; align-items: center; padding: 6px 8px; background: #2a2a4a; border-radius: 4px; margin-bottom: 4px; font-size: 12px; }
-    .oa-remove-symbol { background: transparent; border: none; color: #ff5252; cursor: pointer; font-size: 14px; }
-    .oa-add-symbol { display: flex; gap: 4px; flex-wrap: wrap; }
-    .oa-add-symbol input, .oa-add-symbol select { flex: 1; min-width: 60px; background: #2a2a4a; color: #fff; border: 1px solid #444; border-radius: 4px; padding: 6px; font-size: 11px; }
-    .oa-btn { padding: 8px 14px; border: none; border-radius: 6px; font-weight: 600; cursor: pointer; text-transform: uppercase; font-size: 12px; }
+    .oa-settings-content { padding: 10px; }
+    .oa-settings-content h3 { margin: 0 0 10px; font-size: 12px; }
+    .oa-settings-content h4 { margin: 10px 0 6px; font-size: 10px; color: #666; }
+    .oa-form-group { margin-bottom: 8px; }
+    .oa-form-group label { display: block; font-size: 9px; color: #666; margin-bottom: 3px; }
+    .oa-form-group input, .oa-form-group select { width: 100%; background: #111; color: #fff; border: 1px solid #333; border-radius: 3px; padding: 6px; box-sizing: border-box; font-size: 10px; }
+    .oa-symbol-list { max-height: 80px; overflow-y: auto; margin-bottom: 6px; }
+    .oa-symbol-item { display: flex; justify-content: space-between; align-items: center; padding: 4px 6px; background: #111; border-radius: 3px; margin-bottom: 3px; font-size: 10px; }
+    .oa-symbol-info { flex: 1; }
+    .oa-symbol-actions { display: flex; gap: 4px; }
+    .oa-edit-symbol { background: transparent; border: none; cursor: pointer; font-size: 12px; padding: 2px; }
+    .oa-remove-symbol { background: transparent; border: none; color: #ff5252; cursor: pointer; font-size: 12px; padding: 2px; }
+    .oa-edit-form { background: #1a1a2e; padding: 8px; border-radius: 4px; margin-bottom: 8px; }
+    .oa-edit-form.hidden { display: none; }
+    .oa-edit-row { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; }
+    .oa-edit-row input, .oa-edit-row select { flex: 1; min-width: 50px; background: #111; color: #fff; border: 1px solid #333; border-radius: 3px; padding: 4px; font-size: 9px; }
+    .oa-add-symbol { display: flex; gap: 3px; flex-wrap: wrap; }
+    .oa-add-symbol input, .oa-add-symbol select { flex: 1; min-width: 50px; background: #111; color: #fff; border: 1px solid #333; border-radius: 3px; padding: 4px; font-size: 9px; }
+    .oa-btn { padding: 5px 10px; border: none; border-radius: 4px; font-weight: 600; cursor: pointer; text-transform: uppercase; font-size: 9px; }
     .oa-btn.primary { background: #5c6bc0; color: #fff; }
     .oa-btn.success { background: #00c853; color: #fff; }
     .oa-btn.warning { background: #ffc107; color: #000; }
     .oa-btn.error { background: #ff5252; color: #fff; }
     .oa-btn.info { background: #29b6f6; color: #fff; }
-    .oa-quick-row { display: flex; gap: 6px; align-items: center; }
-    .openalgo-notification { position: fixed; bottom: 20px; right: 20px; padding: 12px 20px; border-radius: 8px; font-weight: 600; z-index: 10001; animation: slideIn 0.3s ease; }
+    .oa-quick-row { display: flex; gap: 4px; align-items: center; }
+    
+    /* Loading animation */
+    .oa-loading { position: relative; }
+    .oa-loading::after { content: ''; position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: linear-gradient(90deg, transparent, rgba(255,255,255,0.1), transparent); animation: oa-shimmer 1.5s infinite; }
+    @keyframes oa-shimmer { 0% { transform: translateX(-100%); } 100% { transform: translateX(100%); } }
+    
+    /* Notifications */
+    .openalgo-notification { position: fixed; bottom: 20px; right: 20px; padding: 10px 16px; border-radius: 6px; font-weight: 600; z-index: 10001; animation: slideIn 0.3s ease; font-size: 11px; }
     .openalgo-notification.success { background: #00c853; color: #fff; }
     .openalgo-notification.error { background: #ff5252; color: #fff; }
     .openalgo-notification.fadeOut { opacity: 0; transition: opacity 0.5s; }
