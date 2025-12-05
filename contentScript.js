@@ -1,4 +1,4 @@
-// OpenAlgo Options Scalping Extension v2.1
+// OpenAlgo Options Scalping Extension v2.2
 // Global state
 let state = {
   action: 'BUY',
@@ -6,6 +6,8 @@ let state = {
   selectedExpiry: '',
   selectedOffset: 'ATM',
   selectedStrike: 0,
+  strikeMode: 'moneyness', // 'moneyness' or 'strike'
+  extendLevel: 5, // Current ITM/OTM level (5 = ITM5/OTM5)
   useMoneyness: true,
   lots: 1,
   orderType: 'MARKET',
@@ -18,7 +20,7 @@ let state = {
   theme: 'dark',
   refreshMode: 'auto',
   refreshIntervalSec: 5,
-  refreshAreas: { funds: true, underlying: true, strikes: true },
+  refreshAreas: { funds: true, underlying: true, selectedStrike: true },
   loading: { funds: false, underlying: false, strikes: false }
 };
 
@@ -36,7 +38,9 @@ async function init() {
   settings = await loadSettings();
   injectStyles();
   injectUI();
+  applyTheme(state.theme);
   if (settings.uiMode === 'scalping' && settings.symbols?.length > 0) {
+    fetchExpiry(); // Fetch expiry on initial load
     startDataRefresh();
   }
 }
@@ -44,18 +48,19 @@ async function init() {
 // Load settings from chrome storage
 function loadSettings() {
   return new Promise((resolve) => {
-    chrome.storage.sync.get(['hostUrl', 'apiKey', 'symbols', 'activeSymbolId', 'uiMode', 'symbol', 'exchange', 'product', 'quantity', 'theme', 'refreshMode', 'refreshIntervalSec', 'refreshAreas'], (data) => {
+    chrome.storage.sync.get(['hostUrl', 'apiKey', 'symbols', 'activeSymbolId', 'uiMode', 'symbol', 'exchange', 'product', 'quantity', 'theme', 'refreshMode', 'refreshIntervalSec', 'refreshAreas', 'strikeMode'], (data) => {
       state.theme = data.theme || 'dark';
       state.refreshMode = data.refreshMode || 'auto';
       state.refreshIntervalSec = data.refreshIntervalSec || 5;
-      state.refreshAreas = data.refreshAreas || { funds: true, underlying: true, strikes: true };
+      state.refreshAreas = data.refreshAreas || { funds: true, underlying: true, selectedStrike: true };
+      state.strikeMode = data.strikeMode || 'moneyness';
+      state.useMoneyness = state.strikeMode === 'moneyness';
       resolve({
         hostUrl: data.hostUrl || 'http://127.0.0.1:5000',
         apiKey: data.apiKey || '',
         symbols: data.symbols || [],
         activeSymbolId: data.activeSymbolId || '',
         uiMode: data.uiMode || 'scalping',
-        // Legacy settings for quick mode
         symbol: data.symbol || '',
         exchange: data.exchange || 'NSE',
         product: data.product || 'MIS',
@@ -353,17 +358,17 @@ function makeLegacyApiCall(url, data, actionText) {
     .catch(e => showNotification(`API Error: ${e.message}`, 'error'));
 }
 
-// Start data refresh interval
+// Start data refresh interval (expiry only on init, not in interval)
 function startDataRefresh() {
   if (state.refreshAreas.underlying) fetchUnderlyingQuote();
   if (state.refreshAreas.funds) fetchFunds();
-  fetchExpiry();
+  // Don't fetch expiry here - only on symbol change and initial load
   if (refreshInterval) clearInterval(refreshInterval);
   if (state.refreshMode === 'auto') {
     refreshInterval = setInterval(() => {
       if (state.refreshAreas.underlying) fetchUnderlyingQuote();
       if (state.refreshAreas.funds) fetchFunds();
-      if (state.refreshAreas.strikes && strikeChain.length > 0) fetchStrikeLTPs();
+      if (state.refreshAreas.selectedStrike) refreshSelectedStrike();
     }, state.refreshIntervalSec * 1000);
   }
 }
@@ -372,7 +377,33 @@ function startDataRefresh() {
 function manualRefresh() {
   if (state.refreshAreas.underlying) fetchUnderlyingQuote();
   if (state.refreshAreas.funds) fetchFunds();
-  if (state.refreshAreas.strikes && strikeChain.length > 0) fetchStrikeLTPs();
+  if (state.refreshAreas.selectedStrike) refreshSelectedStrike();
+}
+
+// Refresh only the selected strike's LTP and update price if MARKET
+async function refreshSelectedStrike() {
+  const selected = strikeChain.find(s => s.offset === state.selectedOffset);
+  if (!selected) return;
+
+  state.loading.strikes = true;
+  showLoadingIndicator('strikes');
+
+  const result = await apiCall('/api/v1/quotes', { symbol: selected.symbol, exchange: selected.exchange });
+  if (result.status === 'success' && result.data) {
+    selected.ltp = result.data.ltp || 0;
+    selected.prevClose = result.data.prev_close || 0;
+    state.optionLtp = selected.ltp;
+    state.optionPrevClose = selected.prevClose;
+
+    // Update price element if MARKET order
+    if (state.orderType === 'MARKET') {
+      updatePriceDisplay();
+    }
+    updateStrikeDropdown();
+  }
+
+  state.loading.strikes = false;
+  hideLoadingIndicator('strikes');
 }
 
 // Show notification
@@ -422,16 +453,25 @@ function updateStrikeDropdown() {
   const list = document.getElementById('oa-strike-list');
   if (!list) return;
   const optType = state.optionType;
+  const isStrikeMode = state.strikeMode === 'strike';
+
   list.innerHTML = strikeChain.map(s => {
     const { colorClass } = getChangeDisplay(s.ltp, s.prevClose);
     const isATM = s.offset === 'ATM';
     const isSelected = s.offset === state.selectedOffset;
-    return `<div class="oa-strike-row ${isATM ? 'atm' : ''} ${isSelected ? 'selected' : ''}" data-offset="${s.offset}" data-strike="${s.strike}">
-      <span class="oa-moneyness">${s.offset}</span>
-      <span class="oa-strike">${s.strike} <span class="oa-opt-badge ${optType === 'CE' ? 'ce' : 'pe'}">${optType}</span></span>
+
+    // In moneyness mode: highlight offset, strike non-editable
+    // In strike mode: offset dim, strike editable
+    const offsetClass = isStrikeMode ? 'oa-moneyness dim' : 'oa-moneyness';
+    const strikeClass = isStrikeMode ? 'oa-strike editable' : 'oa-strike';
+
+    return `<div class="oa-strike-row ${isATM ? 'atm' : ''} ${isSelected ? 'selected' : ''}" data-offset="${s.offset}" data-strike="${s.strike}" data-symbol="${s.symbol}">
+      <span class="${offsetClass}">${s.offset}</span>
+      <span class="${strikeClass}">${s.strike} <span class="oa-opt-badge ${optType === 'CE' ? 'ce' : 'pe'}">${optType}</span></span>
       <span class="oa-ltp ${colorClass}">${formatNumber(s.ltp)}</span>
     </div>`;
   }).join('');
+
   list.querySelectorAll('.oa-strike-row').forEach(row => {
     row.addEventListener('click', () => {
       state.selectedOffset = row.dataset.offset;
@@ -445,7 +485,12 @@ function updateStrikeDropdown() {
 
 function updateStrikeButton() {
   const btn = document.getElementById('oa-strike-btn');
-  if (btn) btn.textContent = `${state.selectedOffset} ${state.selectedStrike}`;
+  if (!btn) return;
+  if (state.strikeMode === 'moneyness') {
+    btn.textContent = `${state.selectedOffset} ${state.selectedStrike}`;
+  } else {
+    btn.textContent = `${state.selectedStrike} ${state.optionType}`;
+  }
 }
 
 function updatePriceDisplay() {
@@ -497,6 +542,7 @@ function injectUI() {
 function buildScalpingUI() {
   const symbol = getActiveSymbol();
   const themeIcon = state.theme === 'dark' ? '☀️' : '🌙';
+  const modeLabel = state.strikeMode === 'moneyness' ? 'M' : 'S';
   return `
     <div class="oa-drag-handle"></div>
     <div class="oa-header">
@@ -532,6 +578,11 @@ function buildScalpingUI() {
       </div>
       <div class="oa-strike-header"><span>Moneyness</span><span>Strike</span><span>LTP</span></div>
       <div id="oa-strike-list" class="oa-strike-list"></div>
+      <div class="oa-strike-actions">
+        <button id="oa-update-strikes" class="oa-action-btn" title="Update strikes & quotes">⟳ Update</button>
+        <button id="oa-mode-toggle" class="oa-action-btn" title="Toggle Moneyness/Strike mode">${modeLabel}</button>
+        <button id="oa-extend-strikes" class="oa-action-btn" title="Load more strikes">+ More</button>
+      </div>
     </div>
     <div id="oa-refresh-panel" class="oa-refresh-panel hidden"></div>
     <div id="oa-settings-panel" class="oa-settings-panel hidden"></div>
@@ -553,11 +604,13 @@ function buildQuickUI() {
 }
 
 function setupScalpingEvents(container) {
-  // Symbol select
+  // Symbol select - only fetch expiry when symbol changes
   container.querySelector('#oa-symbol-select')?.addEventListener('change', async (e) => {
     await saveSettings({ activeSymbolId: e.target.value });
     strikeChain = [];
     state.selectedExpiry = '';
+    state.extendLevel = 5;
+    fetchExpiry(); // Only fetch expiry on symbol change
     startDataRefresh();
   });
 
@@ -569,11 +622,17 @@ function setupScalpingEvents(container) {
     updateOrderButton();
   });
 
-  // Option type toggle (CE/PE)
+  // Option type toggle (CE/PE) - with loading animation and price update
   container.querySelector('#oa-option-type-btn')?.addEventListener('click', async (e) => {
     state.optionType = state.optionType === 'CE' ? 'PE' : 'CE';
     e.target.textContent = state.optionType;
+    e.target.classList.add('oa-loading');
     await fetchStrikeChain();
+    e.target.classList.remove('oa-loading');
+    // Update price element with new strike LTP
+    if (state.orderType === 'MARKET') {
+      updatePriceDisplay();
+    }
   });
 
   // Strike button
@@ -626,6 +685,11 @@ function setupScalpingEvents(container) {
   // Expiry slider arrows
   container.querySelector('#oa-expiry-left')?.addEventListener('click', () => scrollExpiry(-1));
   container.querySelector('#oa-expiry-right')?.addEventListener('click', () => scrollExpiry(1));
+
+  // Strike dropdown controls
+  container.querySelector('#oa-update-strikes')?.addEventListener('click', () => updateStrikesAndQuotes());
+  container.querySelector('#oa-mode-toggle')?.addEventListener('click', () => toggleStrikeMode());
+  container.querySelector('#oa-extend-strikes')?.addEventListener('click', () => extendStrikes());
 
   // Settings button
   container.querySelector('#oa-settings-btn')?.addEventListener('click', () => toggleSettingsPanel());
@@ -690,13 +754,15 @@ function buildRefreshPanel() {
       <div class="oa-form-group">
         <label>Data to Refresh</label>
         <div class="oa-checkbox-group">
-          <label><input type="checkbox" id="oa-ref-funds" ${state.refreshAreas.funds ? 'checked' : ''}> Funds</label>
-          <label><input type="checkbox" id="oa-ref-underlying" ${state.refreshAreas.underlying ? 'checked' : ''}> Underlying</label>
-          <label><input type="checkbox" id="oa-ref-strikes" ${state.refreshAreas.strikes ? 'checked' : ''}> Strikes</label>
+          <label class="oa-checkbox-item"><input type="checkbox" id="oa-ref-funds" ${state.refreshAreas.funds ? 'checked' : ''}> Funds</label>
+          <label class="oa-checkbox-item"><input type="checkbox" id="oa-ref-underlying" ${state.refreshAreas.underlying ? 'checked' : ''}> Underlying</label>
+          <label class="oa-checkbox-item"><input type="checkbox" id="oa-ref-selectedStrike" ${state.refreshAreas.selectedStrike ? 'checked' : ''}> Selected strike</label>
         </div>
       </div>
-      <button id="oa-refresh-save" class="oa-btn primary">Save</button>
-      <button id="oa-refresh-now" class="oa-btn success">Refresh Now</button>
+      <div class="oa-refresh-actions">
+        <button id="oa-refresh-save" class="oa-btn primary">Save</button>
+        <button id="oa-refresh-now" class="oa-btn success">Refresh Now</button>
+      </div>
     </div>
   `;
 }
@@ -712,7 +778,7 @@ function setupRefreshEvents(panel) {
     state.refreshAreas = {
       funds: panel.querySelector('#oa-ref-funds').checked,
       underlying: panel.querySelector('#oa-ref-underlying').checked,
-      strikes: panel.querySelector('#oa-ref-strikes').checked
+      selectedStrike: panel.querySelector('#oa-ref-selectedStrike').checked
     };
     await saveSettings({ refreshMode: state.refreshMode, refreshIntervalSec: state.refreshIntervalSec, refreshAreas: state.refreshAreas });
     startDataRefresh();
@@ -737,6 +803,118 @@ function showLoadingIndicator(area) {
 function hideLoadingIndicator(area) {
   const el = document.getElementById(`oa-${area === 'underlying' ? 'underlying-ltp' : area}`);
   if (el) el.classList.remove('oa-loading');
+}
+
+// Strike dropdown control functions
+async function updateStrikesAndQuotes() {
+  const btn = document.getElementById('oa-update-strikes');
+  if (btn) btn.classList.add('oa-loading');
+
+  if (state.strikeMode === 'moneyness') {
+    // Re-fetch moneyness-based strikes using optionsymbol API
+    await fetchStrikeChain();
+  } else {
+    // In strike mode, just update quotes
+    await fetchStrikeLTPs();
+  }
+
+  // Update price if MARKET order
+  if (state.orderType === 'MARKET') {
+    updatePriceDisplay();
+  }
+
+  if (btn) btn.classList.remove('oa-loading');
+}
+
+async function toggleStrikeMode() {
+  state.strikeMode = state.strikeMode === 'moneyness' ? 'strike' : 'moneyness';
+  state.useMoneyness = state.strikeMode === 'moneyness';
+  await saveSettings({ strikeMode: state.strikeMode });
+
+  // Update mode button label
+  const btn = document.getElementById('oa-mode-toggle');
+  if (btn) btn.textContent = state.strikeMode === 'moneyness' ? 'M' : 'S';
+
+  // Update strike dropdown to show editable/non-editable strike
+  updateStrikeDropdown();
+  showNotification(`Mode: ${state.strikeMode === 'moneyness' ? 'Moneyness' : 'Strike'}`, 'success');
+}
+
+async function extendStrikes() {
+  const symbol = getActiveSymbol();
+  if (!symbol || !state.selectedExpiry) return;
+
+  const btn = document.getElementById('oa-extend-strikes');
+  if (btn) btn.classList.add('oa-loading');
+
+  state.extendLevel++;
+  const newITM = `ITM${state.extendLevel}`;
+  const newOTM = `OTM${state.extendLevel}`;
+
+  // Fetch new ITM and OTM strikes
+  const promises = [newITM, newOTM].map(offset =>
+    apiCall('/api/v1/optionsymbol', {
+      strategy: 'Chrome',
+      underlying: symbol.symbol,
+      exchange: symbol.exchange,
+      expiry_date: state.selectedExpiry,
+      offset: offset,
+      option_type: state.optionType
+    })
+  );
+
+  const results = await Promise.all(promises);
+  const newStrikes = [];
+
+  results.forEach((r, i) => {
+    if (r.status === 'success') {
+      const offset = i === 0 ? newITM : newOTM;
+      const strikeMatch = r.symbol.match(/^[A-Z]+(?:\d{2}[A-Z]{3}\d{2})(\d+)(?=CE$|PE$)/);
+      newStrikes.push({
+        offset,
+        symbol: r.symbol,
+        exchange: r.exchange || symbol.optionExchange,
+        strike: strikeMatch ? parseInt(strikeMatch[1]) : 0,
+        lotsize: r.lotsize || state.lotSize,
+        ltp: 0,
+        prevClose: 0
+      });
+    }
+  });
+
+  // Add to chain (ITM at beginning, OTM at end)
+  const itmStrike = newStrikes.find(s => s.offset === newITM);
+  const otmStrike = newStrikes.find(s => s.offset === newOTM);
+  if (itmStrike) strikeChain.unshift(itmStrike);
+  if (otmStrike) strikeChain.push(otmStrike);
+
+  // Fetch LTPs for new strikes
+  if (newStrikes.length > 0) {
+    const symbols = newStrikes.map(s => ({ symbol: s.symbol, exchange: s.exchange }));
+    const result = await apiCall('/api/v1/multiquotes', { symbols });
+    if (result.status === 'success' && result.results) {
+      result.results.forEach(r => {
+        const strike = strikeChain.find(s => s.symbol === r.symbol);
+        if (strike && r.data) {
+          strike.ltp = r.data.ltp || 0;
+          strike.prevClose = r.data.prev_close || 0;
+        }
+      });
+    }
+  }
+
+  updateStrikeDropdown();
+  if (btn) btn.classList.remove('oa-loading');
+}
+
+// Build dynamic symbol for Strike mode
+function buildDynamicSymbol(strike) {
+  const symbol = getActiveSymbol();
+  if (!symbol) return null;
+
+  // Format: BANKNIFTY05DEC2453600CE
+  const expiry = state.selectedExpiry; // Already in DDMMMYY format
+  return `${symbol.symbol}${expiry}${strike}${state.optionType}`;
 }
 
 // Settings panel
@@ -1020,29 +1198,38 @@ function injectStyles() {
     .oa-expiry-btn { background: #111; color: #888; border: none; border-radius: 3px; padding: 4px 8px; font-size: 9px; cursor: pointer; white-space: nowrap; }
     .oa-expiry-btn.active { background: #3a3a6a; color: #fff; }
     .oa-strike-header { display: grid; grid-template-columns: 0.8fr 1fr 0.6fr; padding: 4px 8px; font-size: 9px; color: #555; border-bottom: 1px solid #222; }
-    .oa-strike-list { max-height: 180px; overflow-y: auto; }
+    .oa-strike-list { max-height: 150px; overflow-y: auto; }
     .oa-strike-row { display: grid; grid-template-columns: 0.8fr 1fr 0.6fr; padding: 5px 8px; cursor: pointer; font-size: 10px; }
     .oa-strike-row:hover { background: #111; }
     .oa-strike-row.selected { background: #1a2a4a; }
     .oa-strike-row.atm { background: #0a2a1a; font-weight: 600; }
-    .oa-moneyness { color: #666; font-size: 9px; }
+    .oa-moneyness { color: #888; font-size: 9px; }
+    .oa-moneyness.dim { color: #444; }
     .oa-strike { color: #fff; display: flex; align-items: center; gap: 4px; }
+    .oa-strike.editable { color: #5c6bc0; }
     .oa-opt-badge { font-size: 8px; padding: 1px 3px; border-radius: 2px; font-weight: 600; }
     .oa-opt-badge.ce { background: #00c853; color: #000; }
     .oa-opt-badge.pe { background: #ff1744; color: #fff; }
     .oa-ltp { text-align: right; font-size: 10px; }
     
-    /* Refresh panel */
-    .oa-refresh-panel { position: absolute; top: 100%; left: 0; right: 0; background: #000; border: 1px solid #222; border-radius: 6px; margin-top: 4px; z-index: 102; }
+    /* Strike actions row */
+    .oa-strike-actions { display: flex; gap: 4px; padding: 6px 8px; border-top: 1px solid #222; background: #0a0a0a; }
+    .oa-action-btn { flex: 1; padding: 5px 8px; background: #222; color: #aaa; border: 1px solid #333; border-radius: 3px; font-size: 9px; cursor: pointer; text-align: center; }
+    .oa-action-btn:hover { background: #333; color: #fff; }
+    .oa-action-btn.oa-loading { opacity: 0.7; pointer-events: none; }
+    
+    /* Refresh panel - fixed width */
+    .oa-refresh-panel { position: absolute; top: 100%; left: 0; background: #000; border: 1px solid #222; border-radius: 6px; margin-top: 4px; z-index: 102; width: 240px; }
     .oa-refresh-panel.hidden { display: none; }
     .oa-refresh-content { padding: 10px; }
     .oa-refresh-content h4 { margin: 0 0 8px; font-size: 11px; color: #888; }
-    .oa-checkbox-group { display: flex; flex-direction: column; gap: 4px; }
-    .oa-checkbox-group label { display: flex; align-items: center; gap: 6px; font-size: 10px; color: #ccc; cursor: pointer; }
-    .oa-checkbox-group input { width: 14px; height: 14px; }
+    .oa-checkbox-group { display: flex; flex-direction: column; gap: 6px; }
+    .oa-checkbox-item { display: flex; align-items: center; gap: 8px; font-size: 10px; color: #ccc; cursor: pointer; }
+    .oa-checkbox-item input[type="checkbox"] { width: 14px; height: 14px; margin: 0; flex-shrink: 0; }
+    .oa-refresh-actions { display: flex; gap: 6px; margin-top: 10px; }
     
-    /* Settings panel */
-    .oa-settings-panel { position: absolute; top: 100%; left: 0; right: 0; background: #000; border: 1px solid #222; border-radius: 6px; margin-top: 4px; z-index: 101; max-height: 350px; overflow-y: auto; }
+    /* Settings panel - fixed width */
+    .oa-settings-panel { position: absolute; top: 100%; left: 0; background: #000; border: 1px solid #222; border-radius: 6px; margin-top: 4px; z-index: 101; max-height: 350px; overflow-y: auto; width: 240px; }
     .oa-settings-panel.hidden { display: none; }
     .oa-settings-content { padding: 10px; }
     .oa-settings-content h3 { margin: 0 0 10px; font-size: 12px; }
@@ -1071,8 +1258,8 @@ function injectStyles() {
     .oa-quick-row { display: flex; gap: 4px; align-items: center; }
     
     /* Loading animation */
-    .oa-loading { position: relative; }
-    .oa-loading::after { content: ''; position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: linear-gradient(90deg, transparent, rgba(255,255,255,0.1), transparent); animation: oa-shimmer 1.5s infinite; }
+    .oa-loading { position: relative; overflow: hidden; }
+    .oa-loading::after { content: ''; position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: linear-gradient(90deg, transparent, rgba(255,255,255,0.15), transparent); animation: oa-shimmer 1s infinite; }
     @keyframes oa-shimmer { 0% { transform: translateX(-100%); } 100% { transform: translateX(100%); } }
     
     /* Notifications */
