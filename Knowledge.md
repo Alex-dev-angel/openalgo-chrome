@@ -24,7 +24,7 @@ The UI is designed with a "Single Row" philosophy for the main controls to ensur
 *   **Symbol Selector:** A dropdown menu to switch between active trading symbols (e.g., NIFTY, BANKNIFTY).
 *   **Underlying LTP Display:**
     *   Shows the Last Traded Price (LTP) of the underlying asset.
-    *   **Change Indicator:** Includes an arrow (↑/↓), point change (+/-), and percentage change inside braces `(%)`.
+    *   **Change Indicator:** Point change (+/-), and percentage change inside braces `(%)`.
     *   **Color Coding:** 
         *   **Green:** If LTP > Prev Close.
         *   **Red:** If LTP < Prev Close.
@@ -36,8 +36,8 @@ The UI is designed with a "Single Row" philosophy for the main controls to ensur
 *   **Action Toggle (B/S):** Switches between **BUY** (Green) and **SELL** (Red).
 *   **Option Type Toggle (CE/PE):** Switches between **Call (CE)** and **Put (PE)**. Shows loading animation during fetch.
 *   **Strike/ATM Selector:**
-    *   **Moneyness Mode:** Shows "ATM" (or offset).
-    *   **Strike Mode:** Shows "Strike" or selected strike value.
+    *   **Moneyness Mode:** Shows "Moneyness" initially, then updates to "ATM" (or offset).
+    *   **Strike Mode:** Shows "Strike" initially, then updates to selected strike value.
     *   Clicking opens the **Strike Selection Dropdown**.
 *   **Lots Input:**
     *   Text input for number of lots.
@@ -85,7 +85,7 @@ The UI is designed with a "Single Row" philosophy for the main controls to ensur
         *   If Exchange is `BSE_INDEX` or `BSE`, Option Exchange auto-sets to `BFO`.
     *   **Remove Symbol:** One-click removal from the list.
 *   **Persistence:** Saved to Chrome Storage (`chrome.storage.sync`).
-*   **Dynamic Updates:** Settings apply immediately without page reload.
+*   **Dynamic Updates:** Settings and Symbol List apply immediately without page reload, modifying the UI in real-time.
 
 ### E. Refresh Panel (Compact)
 *   **Compact Design:** Right-aligned, width 200px.

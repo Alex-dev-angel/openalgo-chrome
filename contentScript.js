@@ -225,6 +225,7 @@ async function fetchExpiry() {
     // Auto-fetch strike chain after expiry is loaded
     if (state.selectedExpiry) {
       await fetchStrikeChain();
+      // Remove redundant refreshSelectedStrike() - fetchStrikeChain -> updateSelectedOptionLTP -> updatePriceDisplay -> fetchMargin handles it
     }
   }
 }
@@ -303,7 +304,10 @@ function updateSelectedOptionLTP() {
     state.optionLtp = selected.ltp;
     state.optionPrevClose = selected.prevClose;
     state.selectedStrike = selected.strike;
+    // Prepare symbol for margin call which happens in updatePriceDisplay
+    state.selectedSymbol = selected.symbol;
     updatePriceDisplay();
+    updateStrikeButton();
   }
 }
 
@@ -472,11 +476,11 @@ async function refreshSelectedStrike() {
       selected.prevClose = result.data.prev_close || 0;
       state.optionLtp = selected.ltp;
       state.optionPrevClose = selected.prevClose;
+      // Ensure available for margin call
+      state.selectedSymbol = selected.symbol;
 
-      // Update price element if MARKET order
-      if (state.orderType === 'MARKET') {
-        updatePriceDisplay();
-      }
+      // Update price display unconditionally (updates UI and fetches margin)
+      updatePriceDisplay();
       updateStrikeDropdown();
       updateStrikeButton();
     }
@@ -585,8 +589,8 @@ function updateStrikeDropdown() {
       updateSelectedOptionLTP();
       updateStrikeButton();
       toggleStrikeDropdown(false);
-      // Fetch margin for new selection
-      fetchMargin();
+      // Immediately update dropdown HTML so it shows correct selection when opened again
+      updateStrikeDropdown();
     });
   });
 }
@@ -655,7 +659,7 @@ function buildScalpingUI() {
   const themeIcon = state.theme === 'dark' ? '☀️' : '🌙';
   const modeLabel = state.strikeMode === 'moneyness' ? 'M' : 'S';
   // Initial strike button text based on mode
-  const strikeText = state.strikeMode === 'moneyness' ? 'ATM' : 'Strike';
+  const strikeText = state.strikeMode === 'moneyness' ? 'Moneyness' : 'Strike';
   return `
     <div class="oa-drag-handle"></div>
     <div class="oa-header">
@@ -728,6 +732,7 @@ function setupScalpingEvents(container) {
     await saveSettings({ activeSymbolId: e.target.value });
     strikeChain = [];
     state.selectedExpiry = '';
+    state.selectedSymbol = ''; // Clear symbol to prevent stale margin calls
     state.extendLevel = 5;
     fetchExpiry(); // Only fetch expiry on symbol change
     startDataRefresh();
@@ -912,7 +917,7 @@ function buildRefreshPanel() {
 function setupRefreshEvents(panel) {
   panel.querySelector('#oa-refresh-mode')?.addEventListener('change', (e) => {
     const intGroup = panel.querySelector('#oa-interval-group');
-    if (intGroup) intGroup.style.display = e.target.value === 'manual' ? 'none' : 'block';
+    if (intGroup) intGroup.style.display = e.target.value === 'manual' ? 'none' : '';
   });
   panel.querySelector('#oa-refresh-save')?.addEventListener('click', async () => {
     state.refreshMode = panel.querySelector('#oa-refresh-mode').value;
@@ -1183,8 +1188,17 @@ function setupSettingsEvents(panel) {
     if (!settings.activeSymbolId) settings.activeSymbolId = newSymbol.id;
     await saveSettings({ symbols: settings.symbols, activeSymbolId: settings.activeSymbolId });
     symbolInput.value = '';
-    toggleSettingsPanel();
-    location.reload();
+
+    // Update UI dynamically
+    panel.innerHTML = buildSettingsPanel();
+    setupSettingsEvents(panel);
+
+    // Update main symbol dropdown
+    const select = document.getElementById('oa-symbol-select');
+    if (select) {
+      select.innerHTML = settings.symbols.map(s => `<option value="${s.id}" ${s.id === settings.activeSymbolId ? 'selected' : ''}>${s.symbol}</option>`).join('') + (settings.symbols.length === 0 ? '<option value="">Add symbol in settings</option>' : '');
+    }
+    showNotification('Symbol added!', 'success');
   });
 
   // Remove symbol
@@ -1194,8 +1208,17 @@ function setupSettingsEvents(panel) {
       settings.symbols = settings.symbols.filter(s => s.id !== id);
       if (settings.activeSymbolId === id) settings.activeSymbolId = settings.symbols[0]?.id || '';
       await saveSettings({ symbols: settings.symbols, activeSymbolId: settings.activeSymbolId });
-      toggleSettingsPanel();
-      location.reload();
+
+      // Update UI dynamically
+      panel.innerHTML = buildSettingsPanel();
+      setupSettingsEvents(panel);
+
+      // Update main symbol dropdown
+      const select = document.getElementById('oa-symbol-select');
+      if (select) {
+        select.innerHTML = settings.symbols.map(s => `<option value="${s.id}" ${s.id === settings.activeSymbolId ? 'selected' : ''}>${s.symbol}</option>`).join('') + (settings.symbols.length === 0 ? '<option value="">Add symbol in settings</option>' : '');
+      }
+      showNotification('Symbol removed!', 'success');
     });
   });
 
@@ -1270,6 +1293,8 @@ function setupSettingsEvents(panel) {
     if (modeChanged) {
       const container = document.getElementById('openalgo-controls');
       if (container) {
+        // Update container class to fix width immediately
+        container.className = newSettings.uiMode === 'scalping' ? 'oa-container oa-scalping' : 'oa-container oa-quick';
         container.innerHTML = newSettings.uiMode === 'scalping' ? buildScalpingUI() : buildQuickUI();
         if (newSettings.uiMode === 'scalping') {
           setupScalpingEvents(container);
@@ -1322,6 +1347,9 @@ function injectStyles() {
     .oa-container.oa-dark-theme { background: #000; color: #eee; }
     .oa-container.oa-light-theme { background: #fff; color: #222; box-shadow: 0 4px 20px rgba(0,0,0,0.15); }
     .oa-light-theme .oa-select, .oa-light-theme .oa-toggle, .oa-light-theme .oa-strike-select, .oa-light-theme .oa-lot-btn, .oa-light-theme .oa-lots input, .oa-light-theme .oa-price-input { background: #f0f0f0; color: #222; border-color: #ccc; }
+    .oa-light-theme .oa-lots .oa-input-wrapper input { background: #f0f0f0; color: #222; border-color: #ccc; }
+    .oa-light-theme .oa-small-select, .oa-light-theme .oa-small-input { background: #f0f0f0; color: #222; border-color: #ccc; }
+    .oa-light-theme .oa-add-symbol input, .oa-light-theme .oa-add-symbol select { background: #f0f0f0; color: #222; border-color: #ccc; }
     .oa-light-theme .oa-strike-dropdown, .oa-light-theme .oa-settings-panel, .oa-light-theme .oa-refresh-panel { background: #fff; border-color: #ddd; }
     .oa-light-theme .oa-expiry-btn { background: #e8e8e8; color: #666; }
     .oa-light-theme .oa-expiry-btn.active { background: #5c6bc0; color: #fff; }
@@ -1393,8 +1421,8 @@ function injectStyles() {
     .oa-strike-list { max-height: 150px; overflow-y: auto; }
     .oa-strike-row { display: grid; grid-template-columns: 0.8fr 1fr 0.6fr; padding: 5px 8px; cursor: pointer; font-size: 10px; }
     .oa-strike-row:hover { background: #111; }
-    .oa-strike-row.selected { background: #1a2a4a; }
     .oa-strike-row.atm { background: #0a2a1a; font-weight: 600; }
+    .oa-strike-row.selected { background: #1a2a4a; }
     .oa-moneyness { color: #888; font-size: 9px; }
     .oa-moneyness.dim { color: #444; }
     .oa-strike { color: #fff; display: flex; align-items: center; gap: 4px; }
