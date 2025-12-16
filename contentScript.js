@@ -28,7 +28,11 @@ let state = {
   currentNetQty: 0, // actual net position quantity (in qty units)
   // WebSocket state
   liveDataEnabled: false,
-  wsUrl: 'ws://127.0.0.1:8765'
+  wsUrl: 'ws://127.0.0.1:8765',
+  // Orders state
+  orders: [],
+  ordersFilter: 'open', // 'open', 'completed', 'rejected', 'all'
+  ordersLoading: false
 };
 
 let isInitialized = false;
@@ -42,6 +46,10 @@ let ws = null;
 let wsSubscriptions = { underlying: null, strike: null };
 let wsReconnectTimer = null;
 let refreshInterval = null;
+
+// Lot size cache - keyed by "underlying:expiry" (e.g., "NIFTY:26DEC24")
+// For equity symbols without expiry, key is just "symbol:exchange"
+const lotSizeCache = {};
 
 // Initialize on load
 document.addEventListener('DOMContentLoaded', init);
@@ -1353,6 +1361,7 @@ function buildScalpingUI() {
       <span id="oa-underlying-ltp" class="oa-ltp-display">--</span>
       <span id="oa-mode-indicator" class="oa-mode-indicator">--</span>
       <span id="oa-funds" class="oa-funds">--</span>
+      <button id="oa-orders-btn" class="oa-header-btn" title="Orders">Orders</button>
       <button id="oa-theme-btn" class="oa-icon-btn" title="Toggle theme">${themeIcon}</button>
       <button id="oa-refresh-btn" class="oa-icon-btn" title="Refresh settings">🔄</button>
       <button id="oa-settings-btn" class="oa-icon-btn">⋮</button>
@@ -1391,6 +1400,22 @@ function buildScalpingUI() {
         <button id="oa-update-strikes" class="oa-action-btn" title="Update strikes & quotes">⟳ Update</button>
         <button id="oa-mode-toggle" class="oa-action-btn" title="Toggle Moneyness/Strike mode">${modeLabel}</button>
         <button id="oa-extend-strikes" class="oa-action-btn" title="Load more strikes">+ More</button>
+      </div>
+    </div>
+    <div id="oa-orders-dropdown" class="oa-orders-dropdown hidden">
+      <div class="oa-orders-header">
+        <span class="oa-orders-title">Orders</span>
+        <div class="oa-orders-filters">
+          <button class="oa-filter-btn" data-filter="open">Pending</button>
+          <button class="oa-filter-btn" data-filter="completed">Executed</button>
+          <button class="oa-filter-btn" data-filter="rejected">Rejected</button>
+          <button class="oa-filter-btn" data-filter="cancelled">Cancelled</button>
+        </div>
+      </div>
+      <div id="oa-orders-list" class="oa-orders-list"></div>
+      <div class="oa-orders-footer">
+        <button id="oa-refresh-orders" class="oa-footer-btn refresh">↻ Refresh</button>
+        <button id="oa-cancel-all-btn" class="oa-footer-btn">Cancel All</button>
       </div>
     </div>
     <div id="oa-refresh-panel" class="oa-refresh-panel hidden"></div>
@@ -1774,6 +1799,28 @@ function setupScalpingEvents(container) {
 
   // Settings button
   container.querySelector('#oa-settings-btn')?.addEventListener('click', () => toggleSettingsPanel());
+
+  // Orders button
+  container.querySelector('#oa-orders-btn')?.addEventListener('click', () => toggleOrdersDropdown());
+
+  // Orders filters
+  const filterBtns = container.querySelectorAll('.oa-filter-btn');
+  filterBtns.forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      filterBtns.forEach(b => b.classList.remove('active'));
+      e.target.classList.add('active');
+      state.ordersFilter = e.target.dataset.filter;
+      renderOrders();
+    });
+  });
+  const defaultFilter = container.querySelector(`.oa-filter-btn[data-filter="${state.ordersFilter}"]`);
+  if (defaultFilter) defaultFilter.classList.add('active');
+
+  // Orders refresh
+  container.querySelector('#oa-refresh-orders')?.addEventListener('click', () => fetchOrders());
+
+  // Cancel all
+  container.querySelector('#oa-cancel-all-btn')?.addEventListener('click', () => cancelAllOrders());
 }
 
 function setupQuickEvents(container) {
@@ -2539,8 +2586,446 @@ function injectStyles() {
     .openalgo-notification.error { background: #ff5252; color: #fff; }
     .openalgo-notification.fadeOut { opacity: 0; transition: opacity 0.5s; }
     @keyframes slideIn { from { transform: translateX(100px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+
+    /* Orders Dropdown */
+    .oa-orders-dropdown { position: absolute; top: 100%; right: 0; left: auto; background: #000; border: 1px solid #222; border-radius: 6px; margin-top: 4px; z-index: 105; width: 400px; box-shadow: 0 4px 20px rgba(0,0,0,0.5); }
+    .oa-orders-dropdown.hidden { display: none; }
+    .oa-orders-header { display: flex; align-items: center; justify-content: space-between; padding: 8px; border-bottom: 1px solid #222; background: #111; border-radius: 6px 6px 0 0; }
+    .oa-orders-title { font-size: 11px; font-weight: 700; color: #fff; }
+    .oa-orders-filters { display: flex; gap: 4px; }
+    .oa-filter-btn { background: transparent; border: none; color: #666; font-size: 10px; cursor: pointer; padding: 2px 6px; border-radius: 3px; }
+    .oa-filter-btn.active { background: #333; color: #fff; }
+    .oa-orders-list { max-height: 300px; overflow-y: auto; padding: 0; }
+    .oa-order-item { padding: 8px; border-bottom: 1px solid #222; font-size: 10px; }
+    .oa-order-item:last-child { border-bottom: none; }
+    .oa-order-row-top { display: flex; justify-content: space-between; margin-bottom: 4px; }
+    .oa-order-symbol { font-weight: 700; color: #fff; }
+    .oa-order-tag { padding: 1px 4px; border-radius: 2px; font-size: 8px; font-weight: 600; margin-left: 4px; }
+    .oa-order-tag.buy { background: rgba(0, 200, 83, 0.2); color: #00e676; }
+    .oa-order-tag.sell { background: rgba(255, 23, 68, 0.2); color: #ff5252; }
+    .oa-order-status { font-size: 9px; color: #aaa; text-transform: uppercase; }
+    .oa-order-status.complete { color: #00e676; }
+    .oa-order-status.rejected { color: #ff5252; }
+    .oa-order-status.cancelled { color: #ff9800; }
+    .oa-order-status.open { color: #ffc107; }
+    .oa-order-row-details { display: flex; justify-content: space-between; color: #888; align-items: center; }
+    .oa-order-actions { display: flex; gap: 6px; }
+    .oa-order-action-btn { background: transparent; border: none; cursor: pointer; font-size: 12px; padding: 2px; color: #666; }
+    .oa-order-action-btn:hover { color: #fff; }
+    .oa-order-action-btn.edit:hover { color: #29b6f6; }
+    .oa-order-action-btn.cancel:hover { color: #ff5252; }
+    .oa-orders-footer { padding: 8px; border-top: 1px solid #222; display: flex; justify-content: space-between; background: #0a0a0a; border-radius: 0 0 6px 6px; }
+    .oa-footer-btn { background: #222; color: #ccc; border: 1px solid #333; border-radius: 3px; padding: 4px 8px; font-size: 9px; cursor: pointer; }
+    .oa-footer-btn:hover { background: #333; color: #fff; }
+    .oa-footer-btn.refresh { margin-right: auto; }
+    .oa-empty-state { padding: 20px; text-align: center; color: #666; font-size: 10px; }
+
+    /* Light theme overrides */
+    .oa-light-theme .oa-orders-dropdown { background: #fff; border-color: #ddd; box-shadow: 0 4px 20px rgba(0,0,0,0.1); }
+    .oa-light-theme .oa-orders-header { background: #f5f5f5; border-color: #ddd; }
+    .oa-light-theme .oa-orders-title { color: #333; }
+    .oa-light-theme .oa-order-item { border-color: #eee; }
+    .oa-light-theme .oa-order-symbol { color: #333; }
+    .oa-light-theme .oa-orders-footer { background: #f5f5f5; border-color: #ddd; }
+    .oa-light-theme .oa-footer-btn { background: #fff; color: #333; border-color: #ccc; }
+    .oa-light-theme .oa-footer-btn:hover { background: #eee; }
   `;
   document.head.appendChild(style);
+}
+
+// ============ Order Management Functions ============
+
+function toggleOrdersDropdown(show) {
+  const dd = document.getElementById('oa-orders-dropdown');
+  const btn = document.getElementById('oa-orders-btn');
+  if (!dd) return;
+
+  const isShow = show !== undefined ? show : dd.classList.contains('hidden');
+  dd.classList.toggle('hidden', !isShow);
+  btn?.classList.toggle('active', isShow);
+
+  if (isShow) {
+    // Hide other panels
+    toggleSettingsPanel(); // This toggles it, so if open it closes. logic check needed.
+    const settingsPanel = document.getElementById('oa-settings-panel');
+    if (settingsPanel && !settingsPanel.classList.contains('hidden')) settingsPanel.classList.add('hidden');
+
+    // Refresh orders when opening
+    fetchOrders();
+  }
+}
+
+// ============ Lot Size Cache Functions ============
+
+// Parse option symbol to extract underlying and expiry
+// Example: "NIFTY26DEC2424500CE" -> { underlying: "NIFTY", expiry: "26DEC24", strike: "24500", optionType: "CE" }
+// Example: "BANKNIFTY26DEC2452000PE" -> { underlying: "BANKNIFTY", expiry: "26DEC24", strike: "52000", optionType: "PE" }
+function parseOptionSymbol(symbol) {
+  if (!symbol) return null;
+
+  // Match pattern: UNDERLYING + DDMMMYY + STRIKE + CE/PE
+  // e.g., NIFTY26DEC2424500CE, BANKNIFTY26DEC2452000PE
+  const match = symbol.match(/^([A-Z]+)(\d{2}[A-Z]{3}\d{2})(\d+)(CE|PE)$/);
+  if (match) {
+    return {
+      underlying: match[1],
+      expiry: match[2],
+      strike: match[3],
+      optionType: match[4],
+      isOption: true
+    };
+  }
+
+  // For non-option symbols (equity/futures), return as-is
+  return { underlying: symbol, expiry: '', isOption: false };
+}
+
+// Get lot size cache key for an option symbol
+function getLotSizeCacheKey(underlying, expiry) {
+  return `${underlying}:${expiry}`;
+}
+
+// Fetch lot size for a symbol from API
+async function fetchLotSizeFromAPI(symbol, exchange) {
+  const result = await apiCall('/api/v1/symbol', { symbol, exchange });
+  if (result.status === 'success' && result.data) {
+    return result.data.lotsize || 1;
+  }
+  return 1; // Default to 1 if fetch fails
+}
+
+// Get lot size for an order, using cache or fetching from API
+async function getLotSizeForOrder(order) {
+  const parsed = parseOptionSymbol(order.symbol);
+
+  if (!parsed || !parsed.isOption) {
+    // For non-option symbols, just fetch directly
+    const cacheKey = `${order.symbol}:${order.exchange}`;
+    if (lotSizeCache[cacheKey]) {
+      return lotSizeCache[cacheKey];
+    }
+    const lotSize = await fetchLotSizeFromAPI(order.symbol, order.exchange);
+    lotSizeCache[cacheKey] = lotSize;
+    return lotSize;
+  }
+
+  // For options, cache by underlying:expiry
+  const cacheKey = getLotSizeCacheKey(parsed.underlying, parsed.expiry);
+
+  if (lotSizeCache[cacheKey]) {
+    return lotSizeCache[cacheKey];
+  }
+
+  // Fetch from API for this specific symbol
+  const lotSize = await fetchLotSizeFromAPI(order.symbol, order.exchange);
+  lotSizeCache[cacheKey] = lotSize;
+  return lotSize;
+}
+
+// Fetch lot sizes for all unique underlying:expiry combinations in orders
+async function fetchLotSizesForOrders(orders) {
+  // Group orders by underlying:expiry to avoid duplicate fetches
+  const uniqueKeys = new Map(); // Map of cacheKey -> { symbol, exchange }
+
+  for (const order of orders) {
+    const parsed = parseOptionSymbol(order.symbol);
+
+    if (!parsed) continue;
+
+    let cacheKey;
+    if (parsed.isOption) {
+      cacheKey = getLotSizeCacheKey(parsed.underlying, parsed.expiry);
+    } else {
+      cacheKey = `${order.symbol}:${order.exchange}`;
+    }
+
+    // Skip if already in cache
+    if (lotSizeCache[cacheKey]) continue;
+
+    // Add to fetch list if not already queued
+    if (!uniqueKeys.has(cacheKey)) {
+      uniqueKeys.set(cacheKey, { symbol: order.symbol, exchange: order.exchange });
+    }
+  }
+
+  // Fetch all missing lot sizes in parallel
+  const fetchPromises = [];
+  for (const [cacheKey, { symbol, exchange }] of uniqueKeys) {
+    fetchPromises.push(
+      fetchLotSizeFromAPI(symbol, exchange).then(lotSize => {
+        lotSizeCache[cacheKey] = lotSize;
+      })
+    );
+  }
+
+  if (fetchPromises.length > 0) {
+    await Promise.all(fetchPromises);
+  }
+}
+
+// Get lot size from cache for an order (sync version, assumes cache is populated)
+function getCachedLotSizeForOrder(order) {
+  const parsed = parseOptionSymbol(order.symbol);
+
+  if (!parsed) return state.lotSize || 1;
+
+  let cacheKey;
+  if (parsed.isOption) {
+    cacheKey = getLotSizeCacheKey(parsed.underlying, parsed.expiry);
+  } else {
+    cacheKey = `${order.symbol}:${order.exchange}`;
+  }
+
+  return lotSizeCache[cacheKey] || state.lotSize || 1;
+}
+
+async function fetchOrders() {
+  if (!settings.apiKey) return;
+
+  state.ordersLoading = true;
+  const list = document.getElementById('oa-orders-list');
+  if (list) list.innerHTML = '<div class="oa-loading" style="height: 50px;"></div>';
+
+  const result = await apiCall('/api/v1/orderbook', {});
+  state.ordersLoading = false;
+
+  if (result.status === 'success' && result.data && result.data.orders) {
+    state.orders = result.data.orders;
+    // Fetch lot sizes for all unique underlying:expiry combinations
+    await fetchLotSizesForOrders(state.orders);
+    renderOrders();
+  } else {
+    state.orders = [];
+    if (list) list.innerHTML = `<div class="oa-empty-state">Failed to fetch orders</div>`;
+  }
+}
+
+function renderOrders() {
+  const list = document.getElementById('oa-orders-list');
+  if (!list) return;
+
+  if (state.orders.length === 0) {
+    list.innerHTML = '<div class="oa-empty-state">No orders found</div>';
+    return;
+  }
+
+  // Filter orders
+  const filtered = state.orders.filter(o => {
+    const s = o.order_status ? o.order_status.toLowerCase() : '';
+    if (state.ordersFilter === 'open') {
+      return ['open', 'trigger pending', 'validation pending', 'put order req received'].includes(s);
+    } else if (state.ordersFilter === 'completed') {
+      return ['complete', 'executed'].includes(s);
+    } else if (state.ordersFilter === 'rejected') {
+      return ['rejected'].includes(s);
+    } else if (state.ordersFilter === 'cancelled') {
+      return ['cancelled', 'canceled'].includes(s);
+    }
+    return true; // all
+  });
+
+  if (filtered.length === 0) {
+    list.innerHTML = '<div class="oa-empty-state">No orders in this category</div>';
+    return;
+  }
+
+  // Sort by timestamp newly first (if available), else by orderid descending
+  filtered.sort((a, b) => {
+    // Try to parse timestamp 09-Dec-2024 09:44:09
+    const tA = new Date(a.timestamp).getTime();
+    const tB = new Date(b.timestamp).getTime();
+    if (tA && tB) return tB - tA;
+    return b.orderid.localeCompare(a.orderid);
+  });
+
+  list.innerHTML = filtered.map(o => {
+    const isBuy = o.action === 'BUY';
+    const statusClass = (o.order_status || 'open').toLowerCase().replace(/\s+/g, '_');
+    // Map status to class (simple mapping)
+    const finalStatusClass = ['complete', 'executed'].includes(statusClass) ? 'complete' :
+      ['rejected'].includes(statusClass) ? 'rejected' :
+        ['cancelled', 'canceled'].includes(statusClass) ? 'cancelled' : 'open';
+
+    const canEdit = finalStatusClass === 'open';
+    const canCancel = finalStatusClass === 'open';
+
+    // Get lot size for this specific order from cache
+    const orderLotSize = getCachedLotSizeForOrder(o);
+    // Convert quantity to lots for display using order-specific lot size
+    const qty = parseInt(o.quantity) || 0;
+    const displayLots = orderLotSize > 0 ? Math.floor(qty / orderLotSize) : qty;
+
+    // Extract time from timestamp (format: "2025-12-16 09:42:25")
+    let timeStr = '';
+    if (o.timestamp) {
+      const parts = o.timestamp.split(' ');
+      if (parts.length > 1) {
+        timeStr = parts[1]; // Get time part
+      }
+    }
+
+    return `
+      <div class="oa-order-item" id="order-${o.orderid}" data-id="${o.orderid}" data-strategy="${o.strategy || 'Chrome'}" data-qty="${o.quantity}">
+        <div class="oa-order-row-top">
+          <span class="oa-order-symbol">${o.symbol}
+            <span class="oa-order-tag ${isBuy ? 'buy' : 'sell'}">${o.action}</span>
+            <span class="oa-order-tag">${o.pricetype}</span>
+            <span class="oa-order-tag">${o.product}</span>
+          </span>
+          <span class="oa-order-status ${finalStatusClass}">${o.order_status}</span>
+        </div>
+        <div class="oa-order-row-details">
+          <span>Lots: ${displayLots} • Price: ${o.price}${o.trigger_price > 0 ? ' • Trg: ' + o.trigger_price : ''}</span>
+          <div style="display:flex;align-items:center;gap:6px;">
+            ${timeStr ? `<span style="font-size:9px;color:#888;">${timeStr}</span>` : ''}
+            <div class="oa-order-actions">
+              ${canEdit ? `<button class="oa-order-action-btn edit" title="Edit">✏️</button>` : ''}
+              ${canCancel ? `<button class="oa-order-action-btn cancel" title="Cancel">✕</button>` : ''}
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  // Add listeners for actions
+  list.querySelectorAll('.oa-order-action-btn.cancel').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const item = e.target.closest('.oa-order-item');
+      cancelOrder(item.dataset.id, item.dataset.strategy);
+    });
+  });
+
+  list.querySelectorAll('.oa-order-action-btn.edit').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const item = e.target.closest('.oa-order-item');
+      enterEditMode(item.dataset.id);
+    });
+  });
+}
+
+function enterEditMode(orderId) {
+  const item = document.getElementById(`order-${orderId}`);
+  if (!item) return;
+
+  const order = state.orders.find(o => o.orderid === orderId);
+  if (!order) return;
+
+  const isTrigger = ['SL', 'SL-M'].includes(order.pricetype);
+
+  // Get lot size for this specific order from cache
+  const orderLotSize = getCachedLotSizeForOrder(order);
+  // Convert qty to lots for display using order-specific lot size
+  const qty = parseInt(order.quantity) || 0;
+  const displayLots = orderLotSize > 0 ? Math.floor(qty / orderLotSize) : qty;
+
+  item.innerHTML = `
+    <div class="oa-order-row-top" style="margin-bottom: 8px;">
+      <span class="oa-order-symbol">${order.symbol} <span style="font-size:9px;color:#666;">Editing...</span></span>
+    </div>
+    <div style="display:flex;gap:4px;margin-bottom:6px;">
+      <div style="flex:1;">
+        <label style="font-size:8px;color:#666;display:block;">Lots</label>
+        <input type="number" id="edit-lots-${orderId}" value="${displayLots}" class="oa-small-input" style="width:100%;">
+      </div>
+      <div style="flex:1;">
+        <label style="font-size:8px;color:#666;display:block;">Price</label>
+        <input type="number" id="edit-price-${orderId}" value="${order.price}" class="oa-small-input" style="width:100%;">
+      </div>
+      ${isTrigger ? `
+      <div style="flex:1;">
+        <label style="font-size:8px;color:#666;display:block;">Trg Prc</label>
+        <input type="number" id="edit-trg-${orderId}" value="${order.trigger_price || 0}" class="oa-small-input" style="width:100%;">
+      </div>` : ''}
+    </div>
+    <div style="display:flex;gap:4px;justify-content:flex-end;">
+      <button class="oa-btn success" id="save-edit-${orderId}" style="padding:2px 8px;font-size:9px;">Save</button>
+      <button class="oa-btn" id="cancel-edit-${orderId}" style="padding:2px 8px;font-size:9px;background:#333;color:#ccc;">Cancel</button>
+    </div>
+  `;
+
+  document.getElementById(`save-edit-${orderId}`)?.addEventListener('click', () => saveEditOrder(orderId));
+  document.getElementById(`cancel-edit-${orderId}`)?.addEventListener('click', () => renderOrders());
+}
+
+async function saveEditOrder(orderId) {
+  const order = state.orders.find(o => o.orderid === orderId);
+  if (!order) return;
+
+  const lotsInput = document.getElementById(`edit-lots-${orderId}`);
+  const priceInput = document.getElementById(`edit-price-${orderId}`);
+  const trgInput = document.getElementById(`edit-trg-${orderId}`);
+
+  // Get lot size for this specific order from cache
+  const orderLotSize = getCachedLotSizeForOrder(order);
+  // Convert lots to qty for API call using order-specific lot size
+  const lotsValue = lotsInput ? parseInt(lotsInput.value) || 1 : 1;
+  const newQty = lotsValue * orderLotSize;
+  const newPrice = priceInput ? priceInput.value : order.price;
+  const newTrg = trgInput ? trgInput.value : (order.trigger_price || 0);
+
+  const btn = document.getElementById(`save-edit-${orderId}`);
+  if (btn) { btn.textContent = '...'; btn.disabled = true; }
+
+  const data = {
+    strategy: order.strategy || 'Chrome',
+    symbol: order.symbol,
+    exchange: order.exchange,
+    action: order.action,
+    product: order.product,
+    pricetype: order.pricetype,
+    orderid: order.orderid,
+    quantity: String(newQty),
+    price: String(newPrice),
+    trigger_price: String(newTrg),
+    disclosed_quantity: "0" // Mandatory param
+  };
+
+  const result = await apiCall('/api/v1/modifyorder', data);
+
+  if (result.status === 'success') {
+    showNotification(`Order modified ${result.orderid || ''}`, 'success');
+    fetchOrders(); // Refresh list
+  } else {
+    showNotification(`Modify failed: ${result.message || 'Unknown'}`, 'error');
+    if (btn) { btn.textContent = 'Save'; btn.disabled = false; }
+  }
+}
+
+async function cancelOrder(orderId, strategy) {
+  // Direct call, no confirmation as requested
+  const result = await apiCall('/api/v1/cancelorder', {
+    strategy: strategy || 'Chrome',
+    orderid: orderId
+  });
+
+  if (result.status === 'success') {
+    showNotification('Order cancelled', 'success');
+    fetchOrders();
+  } else {
+    showNotification(`Cancel failed: ${result.message}`, 'error');
+  }
+}
+
+async function cancelAllOrders() {
+  const btn = document.getElementById('oa-cancel-all-btn');
+  if (btn) btn.textContent = 'Cancelling...';
+
+  const result = await apiCall('/api/v1/cancelallorder', {
+    strategy: 'Chrome' // Assuming global cancel for this strategy or generally
+  });
+
+  if (result.status === 'success') {
+    const count = result.canceled_orders ? result.canceled_orders.length : 0;
+    showNotification(`Cancelled ${count} orders`, 'success');
+    fetchOrders();
+  } else {
+    showNotification(`Cancel all failed: ${result.message}`, 'error');
+  }
+
+  if (btn) btn.textContent = 'Cancel All';
 }
 
 // Listen for messages
