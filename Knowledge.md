@@ -1,6 +1,6 @@
 # OpenAlgo Options Scalping Extension - Knowledge Base
 
-This document details the features, user instructions, and implementation logic for the OpenAlgo Options Scalping Extension (v2.4).
+This document details the features, user instructions, and implementation logic for the OpenAlgo Options Scalping Extension (v2.5).
 
 ## 1. Project Objective
 
@@ -96,7 +96,44 @@ The UI is designed with a "Single Row" philosophy for the main controls to ensur
 *   **Persistence:** Saved to Chrome Storage (`chrome.storage.sync`).
 *   **Dynamic Updates:** Settings and Symbol List apply immediately without page reload.
 
-### E. Refresh Panel (Compact)
+### E. Orders Management Dropdown
+**Requirement:** Comprehensive order, trade, and position management interface accessible via the "Orders" button in the header.
+
+#### **Tab Navigation**
+*   **Orders:** Displays the orderbook with filtering and actions.
+*   **Tradebook:** Displays executed trades for the day.
+*   **Positions:** Displays all positions (open and closed) with P&L.
+
+#### **Orders Tab**
+*   **Filter Buttons:** Pending, Executed, Rejected, Cancelled.
+*   **Order Display:** Symbol, Action tag (BUY/SELL color-coded), Price Type, Product Type, Status.
+*   **Order Details:** Lots, Price, Trigger Price (if SL), LTP, Timestamp.
+*   **Actions:**
+    *   **Edit (✏️):** Opens inline edit mode to modify Lots, Price, Trigger Price.
+    *   **Cancel (✕):** Cancels the order immediately (no confirmation).
+*   **Footer:**
+    *   **Refresh Button:** Manually refreshes the orderbook.
+    *   **Cancel All Orders:** Cancels all open orders.
+
+#### **Tradebook Tab**
+*   **Trade Display:** Symbol, Action tag, Product Type, Timestamp.
+*   **Trade Details:** Lots, Average Price, LTP, Trade Value.
+*   **Footer Stats:** Total trades, Buy count, Sell count.
+
+#### **Positions Tab**
+*   **Position Display:** Symbol, Position State tag (LONG/SHORT/FLAT color-coded), Product Type.
+*   **Position Details:** Lots, Average Price, LTP, P&L (with unrealized in braces).
+*   **Edit Button:**
+    *   Always visible for **open** positions.
+    *   Appears on **hover only** for **closed (FLAT)** positions.
+*   **Resize Functionality:** Click edit to enter edit mode, set target lots, and resize position via `placesmartorder` API.
+*   **Footer:**
+    *   **Refresh Button:** Manually refreshes positions.
+    *   **Close All Positions:** Squares off all open positions.
+    *   **Stats:** Open position count (Long/Short breakdown).
+    *   **Total P&L:** Sum of all position P&L (color-coded green/red).
+
+### F. Refresh Panel (Compact)
 *   **Compact Design:** Right-aligned overlay.
 *   **Modes:** 
     *   **Manual:** No auto-refresh.
@@ -148,24 +185,40 @@ Triggered when Expiry is selected or Symbol is changed:
 
 ### 5. Order Placement
 A. **Moneyness-Based (M Mode)**
-   *   **API:** `POST /api/v1/optionsorder`
-   *   **Logic:** Backend resolves ATM strike based on spot and places order.
-   *   **Quantity:** Sent as total quantity (Lots * LotSize).
+*   **API:** `POST /api/v1/optionsorder`
+*   **Logic:** Backend resolves ATM strike based on spot and places order.
+*   **Quantity:** Sent as total quantity (Lots * LotSize).
 
 B. **Strike-Based (S Mode)**
-   *   **API:** `POST /api/v1/placeorder`
-   *   **Logic:** Places order for the specifically selected contract.
+*   **API:** `POST /api/v1/placeorder`
+*   **Logic:** Places order for the specifically selected contract.
 
 C. **Resize Order**
-   *   **API:** `POST /api/v1/placesmartorder`
-   *   **Logic:** Adjusts current position to match the target quantity (can close or flip position).
+*   **API:** `POST /api/v1/placesmartorder`
+*   **Logic:** Adjusts current position to match the target quantity (can close or flip position).
+*   **Quantity:** Always sent as positive (absolute value of target lots).
 
 D. **Margin Calculation**
-   *   **Trigger:** Price change, Lots change, Action toggle.
-   *   **API:** `POST /api/v1/margin`
-   *   **Debounce:** API calls are throttled (200ms-1s) to prevent spam.
+*   **Trigger:** Price change, Lots change, Action toggle.
+*   **API:** `POST /api/v1/margin`
+*   **Debounce:** API calls are throttled (200ms-1s) to prevent spam.
 
-### 6. WebSocket Integration
+### 6. Order Management
+*   **Orderbook Fetch:** `POST /api/v1/orderbook` on dropdown open or refresh.
+*   **Order Modify:** `POST /api/v1/modifyorder` with updated Lots, Price, Trigger Price.
+*   **Order Cancel:** `POST /api/v1/cancelorder` with orderId and strategy.
+*   **Cancel All:** `POST /api/v1/cancelallorder` for batch cancellation.
+
+### 7. Tradebook
+*   **Fetch Trades:** `POST /api/v1/tradebook` retrieves all executed trades.
+*   **LTP Fetch:** `POST /api/v1/multiquotes` for real-time LTP of traded symbols.
+
+### 8. Positions Management
+*   **Fetch Positions:** `POST /api/v1/positionbook` retrieves all positions.
+*   **Position Resize:** `POST /api/v1/placesmartorder` to adjust position size.
+*   **Close All Positions:** `POST /api/v1/closeposition` to square off all positions.
+
+### 9. WebSocket Integration
 *   **Connection:** `ws://<host>:<port>` (Default port 8765).
 *   **Subscriptions:**
     *   **Underlying:** Always subscribed for active symbol.
@@ -182,20 +235,38 @@ D. **Margin Calculation**
 3.  **Expiry Dates:** `/api/v1/expiry`
 4.  **Option Symbols:** `/api/v1/optionsymbol`
 5.  **Multi-Quotes:** `/api/v1/multiquotes`
-6.  **Place Option Order:** `/api/v1/optionsorder`
-7.  **Place Regular Order:** `/api/v1/placeorder`
-8.  **Place Smart Order (Resize):** `/api/v1/placesmartorder`
-9.  **Margin Check:** `/api/v1/margin`
-10. **Open Position:** `/api/v1/openposition`
+6.  **Symbol Info (Lot Size):** `/api/v1/symbol`
+7.  **Place Option Order:** `/api/v1/optionsorder`
+8.  **Place Regular Order:** `/api/v1/placeorder`
+9.  **Place Smart Order (Resize):** `/api/v1/placesmartorder`
+10. **Margin Check:** `/api/v1/margin`
+11. **Open Position:** `/api/v1/openposition`
+12. **Orderbook:** `/api/v1/orderbook`
+13. **Modify Order:** `/api/v1/modifyorder`
+14. **Cancel Order:** `/api/v1/cancelorder`
+15. **Cancel All Orders:** `/api/v1/cancelallorder`
+16. **Tradebook:** `/api/v1/tradebook`
+17. **Positionbook:** `/api/v1/positionbook`
+18. **Close All Positions:** `/api/v1/closeposition`
 
 ### B. Event Handling Logic
-*   **Debounce:** `debounceTimers` used for Margin, Quotes, and Funds to reduce API load.
+*   **Debounce:** `debounceTimers` used for Margin, Quotes, Funds, and Open Position to reduce API load.
 *   **Input Handling:**
     *   **Lots/Price:** Update state on input, validate on blur.
-    *   **Net Position:** Double-click or click (if configured) enables editing for manual override.
+    *   **Net Position:** Click enables editing for manual override.
 *   **Theme Engine:** CSS classes `oa-light-theme` / `oa-dark-theme` controlled by `state.theme`.
+*   **Timestamp Parsing:** Helper function `extractTimeFromTimestamp()` supports multiple broker formats:
+    *   `HH:MM:SS DD-MM-YYYY` (Flattrade)
+    *   `DD-Mon-YYYY HH:MM:SS` (AngelOne)
+    *   `YYYY-MM-DD HH:MM:SS` (Standard)
 
-### C. Architecture
+### C. Lot Size Caching
+*   **Purpose:** Avoid redundant `/api/v1/symbol` calls for lot size.
+*   **Cache Key:** `underlying:expiry` for options, `symbol:exchange` for others.
+*   **Batch Fetch:** `fetchLotSizesForOrders()` fetches lot sizes for all unique combinations in parallel.
+*   **Sync Access:** `getCachedLotSizeForOrder()` retrieves from cache during render.
+
+### D. Architecture
 *   **Manifest V3:** Updated to `manifest_version: 3`.
 *   **Storage:** Persisted via `chrome.storage.sync`.
 *   **Content Script:** Injects floating UI overlay (`#openalgo-controls`).
@@ -203,3 +274,4 @@ D. **Margin Calculation**
 *   **Optimizations:**
     *   **Smart Strike Switch:** Swaps CE/PE offsets locally without full API re-fetch if interval is known.
     *   **Lazy Loading:** Settings and Refresh panels built only when opened.
+    *   **LTP Batch Fetch:** Uses `/api/v1/multiquotes` to fetch LTPs for all orders/trades in single call.

@@ -32,7 +32,15 @@ let state = {
   // Orders state
   orders: [],
   ordersFilter: 'open', // 'open', 'completed', 'rejected', 'all'
-  ordersLoading: false
+  ordersLoading: false,
+  // Tradebook state
+  trades: [],
+  tradesLoading: false,
+  // Positions state
+  positions: [],
+  positionsLoading: false,
+  // Active tab in orders dropdown
+  activeBookTab: 'orders' // 'orders', 'tradebook', 'positions'
 };
 
 let isInitialized = false;
@@ -218,6 +226,20 @@ function getChangeDisplay(ltp, prevClose) {
   const sign = change >= 0 ? '+' : '';
   const colorClass = change >= 0 ? 'positive' : 'negative';
   return { change, changePercent, arrow, sign, colorClass };
+}
+
+// Extract time from various timestamp formats
+// Supports: "HH:MM:SS DD-MM-YYYY" (Flattrade), "DD-Mon-YYYY HH:MM:SS" (AngelOne), "YYYY-MM-DD HH:MM:SS" (standard)
+function extractTimeFromTimestamp(timestamp) {
+  if (!timestamp) return '';
+
+  // Try to match time pattern HH:MM:SS anywhere in the string
+  const timeMatch = timestamp.match(/(\d{1,2}:\d{2}:\d{2})/);
+  if (timeMatch) {
+    return timeMatch[1];
+  }
+
+  return '';
 }
 
 // API call helper
@@ -1404,18 +1426,43 @@ function buildScalpingUI() {
     </div>
     <div id="oa-orders-dropdown" class="oa-orders-dropdown hidden">
       <div class="oa-orders-header">
-        <span class="oa-orders-title">Orders</span>
+        <div class="oa-tab-menu">
+          <button class="oa-tab-btn active" data-tab="orders">Orders</button>
+          <button class="oa-tab-btn" data-tab="tradebook">Tradebook</button>
+          <button class="oa-tab-btn" data-tab="positions">Positions</button>
+        </div>
+      </div>
+      <!-- Orders Tab -->
+      <div id="oa-tab-orders" class="oa-tab-content">
         <div class="oa-orders-filters">
           <button class="oa-filter-btn" data-filter="open">Pending</button>
           <button class="oa-filter-btn" data-filter="completed">Executed</button>
           <button class="oa-filter-btn" data-filter="rejected">Rejected</button>
           <button class="oa-filter-btn" data-filter="cancelled">Cancelled</button>
         </div>
+        <div id="oa-orders-list" class="oa-orders-list"></div>
+        <div class="oa-orders-footer">
+          <button id="oa-refresh-orders" class="oa-footer-btn refresh">↻ Refresh</button>
+          <button id="oa-cancel-all-btn" class="oa-footer-btn">Cancel All Orders</button>
+        </div>
       </div>
-      <div id="oa-orders-list" class="oa-orders-list"></div>
-      <div class="oa-orders-footer">
-        <button id="oa-refresh-orders" class="oa-footer-btn refresh">↻ Refresh</button>
-        <button id="oa-cancel-all-btn" class="oa-footer-btn">Cancel All</button>
+      <!-- Tradebook Tab -->
+      <div id="oa-tab-tradebook" class="oa-tab-content hidden">
+        <div id="oa-tradebook-list" class="oa-orders-list"></div>
+        <div class="oa-orders-footer" id="oa-tradebook-footer">
+          <button id="oa-refresh-tradebook" class="oa-footer-btn refresh">↻ Refresh</button>
+          <span id="oa-tradebook-stats" class="oa-footer-stats"></span>
+        </div>
+      </div>
+      <!-- Positions Tab -->
+      <div id="oa-tab-positions" class="oa-tab-content hidden">
+        <div id="oa-positions-list" class="oa-orders-list"></div>
+        <div class="oa-orders-footer" id="oa-positions-footer">
+          <button id="oa-refresh-positions" class="oa-footer-btn refresh">↻ Refresh</button>
+          <button id="oa-close-all-btn" class="oa-footer-btn">Close All Positions</button>
+          <span id="oa-positions-stats" class="oa-footer-stats"></span>
+          <span id="oa-positions-pnl" class="oa-footer-pnl"></span>
+        </div>
       </div>
     </div>
     <div id="oa-refresh-panel" class="oa-refresh-panel hidden"></div>
@@ -1821,6 +1868,22 @@ function setupScalpingEvents(container) {
 
   // Cancel all
   container.querySelector('#oa-cancel-all-btn')?.addEventListener('click', () => cancelAllOrders());
+
+  // Tab switching
+  container.querySelectorAll('.oa-tab-btn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      switchBookTab(e.target.dataset.tab);
+    });
+  });
+
+  // Tradebook refresh
+  container.querySelector('#oa-refresh-tradebook')?.addEventListener('click', () => fetchTradebook());
+
+  // Positions refresh
+  container.querySelector('#oa-refresh-positions')?.addEventListener('click', () => fetchPositions());
+
+  // Positions close all
+  container.querySelector('#oa-close-all-btn')?.addEventListener('click', () => closeAllPositions());
 }
 
 function setupQuickEvents(container) {
@@ -2588,47 +2651,74 @@ function injectStyles() {
     @keyframes slideIn { from { transform: translateX(100px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
 
     /* Orders Dropdown */
-    .oa-orders-dropdown { position: absolute; top: 100%; right: 0; left: auto; background: #000; border: 1px solid #222; border-radius: 6px; margin-top: 4px; z-index: 105; width: 400px; box-shadow: 0 4px 20px rgba(0,0,0,0.5); }
-    .oa-orders-dropdown.hidden { display: none; }
-    .oa-orders-header { display: flex; align-items: center; justify-content: space-between; padding: 8px; border-bottom: 1px solid #222; background: #111; border-radius: 6px 6px 0 0; }
-    .oa-orders-title { font-size: 11px; font-weight: 700; color: #fff; }
-    .oa-orders-filters { display: flex; gap: 4px; }
-    .oa-filter-btn { background: transparent; border: none; color: #666; font-size: 10px; cursor: pointer; padding: 2px 6px; border-radius: 3px; }
-    .oa-filter-btn.active { background: #333; color: #fff; }
-    .oa-orders-list { max-height: 300px; overflow-y: auto; padding: 0; }
-    .oa-order-item { padding: 8px; border-bottom: 1px solid #222; font-size: 10px; }
-    .oa-order-item:last-child { border-bottom: none; }
-    .oa-order-row-top { display: flex; justify-content: space-between; margin-bottom: 4px; }
-    .oa-order-symbol { font-weight: 700; color: #fff; }
-    .oa-order-tag { padding: 1px 4px; border-radius: 2px; font-size: 8px; font-weight: 600; margin-left: 4px; }
-    .oa-order-tag.buy { background: rgba(0, 200, 83, 0.2); color: #00e676; }
-    .oa-order-tag.sell { background: rgba(255, 23, 68, 0.2); color: #ff5252; }
-    .oa-order-status { font-size: 9px; color: #aaa; text-transform: uppercase; }
-    .oa-order-status.complete { color: #00e676; }
-    .oa-order-status.rejected { color: #ff5252; }
-    .oa-order-status.cancelled { color: #ff9800; }
-    .oa-order-status.open { color: #ffc107; }
-    .oa-order-row-details { display: flex; justify-content: space-between; color: #888; align-items: center; }
-    .oa-order-actions { display: flex; gap: 6px; }
-    .oa-order-action-btn { background: transparent; border: none; cursor: pointer; font-size: 12px; padding: 2px; color: #666; }
-    .oa-order-action-btn:hover { color: #fff; }
-    .oa-order-action-btn.edit:hover { color: #29b6f6; }
-    .oa-order-action-btn.cancel:hover { color: #ff5252; }
-    .oa-orders-footer { padding: 8px; border-top: 1px solid #222; display: flex; justify-content: space-between; background: #0a0a0a; border-radius: 0 0 6px 6px; }
-    .oa-footer-btn { background: #222; color: #ccc; border: 1px solid #333; border-radius: 3px; padding: 4px 8px; font-size: 9px; cursor: pointer; }
-    .oa-footer-btn:hover { background: #333; color: #fff; }
-    .oa-footer-btn.refresh { margin-right: auto; }
-    .oa-empty-state { padding: 20px; text-align: center; color: #666; font-size: 10px; }
+    .oa-orders-dropdown { position: absolute !important; top: 100% !important; right: 0 !important; left: auto !important; background: #000 !important; border: 1px solid #222 !important; border-radius: 6px !important; margin-top: 4px !important; z-index: 105 !important; width: 400px !important; box-shadow: 0 4px 20px rgba(0,0,0,0.5) !important; }
+    .oa-orders-dropdown.hidden { display: none !important; }
+    .oa-orders-header { display: flex !important; align-items: center !important; justify-content: space-between !important; padding: 8px !important; border-bottom: 1px solid #222 !important; background: #111 !important; border-radius: 6px 6px 0 0 !important; }
+    .oa-orders-title { font-size: 11px !important; font-weight: 700 !important; color: #fff !important; }
+    .oa-orders-filters { display: flex !important; gap: 4px !important; padding: 6px 8px !important; border-bottom: 1px solid #222 !important; }
+    .oa-filter-btn { background: transparent !important; border: none !important; color: #666 !important; font-size: 10px !important; cursor: pointer !important; padding: 2px 6px !important; border-radius: 3px !important; }
+    .oa-filter-btn.active { background: #333 !important; color: #fff !important; }
+    .oa-orders-list { max-height: 300px !important; overflow-y: auto !important; padding: 0 !important; background: #000 !important; }
+    .oa-order-item { padding: 8px !important; border-bottom: 1px solid #222 !important; font-size: 10px !important; background: transparent !important; }
+    .oa-order-item:last-child { border-bottom: none !important; }
+    .oa-order-row-top { display: flex !important; justify-content: space-between !important; margin-bottom: 4px !important; }
+    .oa-order-symbol { font-weight: 700 !important; color: #fff !important; }
+    .oa-order-tag { padding: 1px 4px !important; border-radius: 2px !important; font-size: 8px !important; font-weight: 600 !important; margin-left: 4px !important; }
+    .oa-order-tag.buy { background: rgba(0, 200, 83, 0.2) !important; color: #00e676 !important; }
+    .oa-order-tag.sell { background: rgba(255, 23, 68, 0.2) !important; color: #ff5252 !important; }
+    .oa-order-status { font-size: 9px !important; color: #aaa !important; text-transform: uppercase !important; }
+    .oa-order-status.complete { color: #00e676 !important; }
+    .oa-order-status.rejected { color: #ff5252 !important; }
+    .oa-order-status.cancelled { color: #ff9800 !important; }
+    .oa-order-status.open { color: #ffc107 !important; }
+    .oa-order-row-details { display: flex !important; justify-content: space-between !important; color: #888 !important; align-items: center !important; }
+    .oa-order-actions { display: flex !important; gap: 6px !important; }
+    .oa-order-action-btn { background: transparent !important; border: none !important; cursor: pointer !important; font-size: 12px !important; padding: 2px !important; color: #666 !important; }
+    .oa-order-action-btn:hover { color: #fff !important; }
+    .oa-order-action-btn.edit:hover { color: #29b6f6 !important; }
+    .oa-order-action-btn.cancel:hover { color: #ff5252 !important; }
+    .oa-order-action-btn.hover-only { opacity: 0 !important; transition: opacity 0.2s !important; }
+    .oa-order-item:hover .oa-order-action-btn.hover-only { opacity: 1 !important; }
+    .oa-orders-footer { padding: 8px !important; border-top: 1px solid #222 !important; display: flex !important; justify-content: flex-start !important; align-items: center !important; gap: 8px !important; background: #0a0a0a !important; border-radius: 0 0 6px 6px !important; }
+    .oa-footer-btn { background: #222 !important; color: #ccc !important; border: 1px solid #333 !important; border-radius: 3px !important; padding: 4px 8px !important; font-size: 9px !important; cursor: pointer !important; }
+    .oa-footer-btn:hover { background: #333 !important; color: #fff !important; }
+    .oa-footer-stats { font-size: 9px !important; color: #888 !important; margin-left: 8px !important; }
+    .oa-footer-pnl { font-size: 10px !important; font-weight: 600 !important; margin-left: auto !important; }
+    .oa-empty-state { padding: 20px !important; text-align: center !important; color: #666 !important; font-size: 10px !important; }
+
+    /* Tab Menu */
+    .oa-tab-menu { display: flex !important; gap: 4px !important; }
+    .oa-tab-btn { background: transparent !important; border: none !important; color: #666 !important; font-size: 11px !important; font-weight: 600 !important; cursor: pointer !important; padding: 4px 10px !important; border-radius: 4px !important; transition: all 0.2s !important; }
+    .oa-tab-btn:hover { color: #aaa !important; }
+    .oa-tab-btn.active { background: #333 !important; color: #fff !important; }
+    .oa-tab-content { display: block !important; }
+    .oa-tab-content.hidden { display: none !important; }
+
+    /* Footer Stats */
+    .oa-footer-pnl.profit { color: #00e676 !important; }
+    .oa-footer-pnl.loss { color: #ff5252 !important; }
 
     /* Light theme overrides */
-    .oa-light-theme .oa-orders-dropdown { background: #fff; border-color: #ddd; box-shadow: 0 4px 20px rgba(0,0,0,0.1); }
-    .oa-light-theme .oa-orders-header { background: #f5f5f5; border-color: #ddd; }
-    .oa-light-theme .oa-orders-title { color: #333; }
-    .oa-light-theme .oa-order-item { border-color: #eee; }
-    .oa-light-theme .oa-order-symbol { color: #333; }
-    .oa-light-theme .oa-orders-footer { background: #f5f5f5; border-color: #ddd; }
-    .oa-light-theme .oa-footer-btn { background: #fff; color: #333; border-color: #ccc; }
-    .oa-light-theme .oa-footer-btn:hover { background: #eee; }
+    .oa-light-theme .oa-orders-dropdown { background: #fff !important; border-color: #ddd !important; box-shadow: 0 4px 20px rgba(0,0,0,0.1) !important; }
+    .oa-light-theme .oa-orders-header { background: #f5f5f5 !important; border-color: #ddd !important; }
+    .oa-light-theme .oa-orders-title { color: #333 !important; }
+    .oa-light-theme .oa-orders-filters { border-color: #ddd !important; }
+    .oa-light-theme .oa-filter-btn { color: #888 !important; }
+    .oa-light-theme .oa-filter-btn.active { background: #e0e0e0 !important; color: #333 !important; }
+    .oa-light-theme .oa-orders-list { background: #fff !important; }
+    .oa-light-theme .oa-order-item { border-color: #eee !important; background: transparent !important; }
+    .oa-light-theme .oa-order-symbol { color: #333 !important; }
+    .oa-light-theme .oa-order-row-details { color: #666 !important; }
+    .oa-light-theme .oa-order-action-btn { color: #999 !important; }
+    .oa-light-theme .oa-order-action-btn:hover { color: #333 !important; }
+    .oa-light-theme .oa-orders-footer { background: #f5f5f5 !important; border-color: #ddd !important; }
+    .oa-light-theme .oa-footer-btn { background: #fff !important; color: #333 !important; border-color: #ccc !important; }
+    .oa-light-theme .oa-footer-btn:hover { background: #eee !important; }
+    .oa-light-theme .oa-footer-stats { color: #666 !important; }
+    .oa-light-theme .oa-tab-btn { color: #888 !important; }
+    .oa-light-theme .oa-tab-btn:hover { color: #555 !important; }
+    .oa-light-theme .oa-tab-btn.active { background: #e0e0e0 !important; color: #333 !important; }
+    .oa-light-theme .oa-empty-state { color: #888 !important; }
   `;
   document.head.appendChild(style);
 }
@@ -2779,6 +2869,37 @@ function getCachedLotSizeForOrder(order) {
   return lotSizeCache[cacheKey] || state.lotSize || 1;
 }
 
+// Fetch LTPs for items (orders, trades, positions) via multiquotes API
+async function fetchLTPsForItems(items) {
+  if (!items || items.length === 0) return;
+
+  // Build unique symbols list
+  const uniqueSymbols = new Map();
+  for (const item of items) {
+    if (!item.symbol || !item.exchange) continue;
+    const key = `${item.symbol}:${item.exchange}`;
+    if (!uniqueSymbols.has(key)) {
+      uniqueSymbols.set(key, { symbol: item.symbol, exchange: item.exchange });
+    }
+  }
+
+  if (uniqueSymbols.size === 0) return;
+
+  // Fetch via multiquotes API
+  const symbols = Array.from(uniqueSymbols.values());
+  const result = await apiCall('/api/v1/multiquotes', { symbols });
+
+  if (result.status === 'success' && result.results) {
+    // Update items with LTP
+    for (const item of items) {
+      const quote = result.results.find(r => r.symbol === item.symbol && r.exchange === item.exchange);
+      if (quote && quote.data) {
+        item.ltp = quote.data.ltp || 0;
+      }
+    }
+  }
+}
+
 async function fetchOrders() {
   if (!settings.apiKey) return;
 
@@ -2793,6 +2914,8 @@ async function fetchOrders() {
     state.orders = result.data.orders;
     // Fetch lot sizes for all unique underlying:expiry combinations
     await fetchLotSizesForOrders(state.orders);
+    // Fetch LTPs for all orders via multiquotes
+    await fetchLTPsForItems(state.orders);
     renderOrders();
   } else {
     state.orders = [];
@@ -2855,14 +2978,8 @@ function renderOrders() {
     const qty = parseInt(o.quantity) || 0;
     const displayLots = orderLotSize > 0 ? Math.floor(qty / orderLotSize) : qty;
 
-    // Extract time from timestamp (format: "2025-12-16 09:42:25")
-    let timeStr = '';
-    if (o.timestamp) {
-      const parts = o.timestamp.split(' ');
-      if (parts.length > 1) {
-        timeStr = parts[1]; // Get time part
-      }
-    }
+    // Extract time from timestamp using helper function
+    const timeStr = extractTimeFromTimestamp(o.timestamp);
 
     return `
       <div class="oa-order-item" id="order-${o.orderid}" data-id="${o.orderid}" data-strategy="${o.strategy || 'Chrome'}" data-qty="${o.quantity}">
@@ -2875,7 +2992,7 @@ function renderOrders() {
           <span class="oa-order-status ${finalStatusClass}">${o.order_status}</span>
         </div>
         <div class="oa-order-row-details">
-          <span>Lots: ${displayLots} • Price: ${o.price}${o.trigger_price > 0 ? ' • Trg: ' + o.trigger_price : ''}</span>
+          <span>Lots: ${displayLots} • Price: ${o.price}${o.trigger_price > 0 ? ' • Trg: ' + o.trigger_price : ''} • LTP: ${(o.ltp || 0).toFixed(2)}</span>
           <div style="display:flex;align-items:center;gap:6px;">
             ${timeStr ? `<span style="font-size:9px;color:#888;">${timeStr}</span>` : ''}
             <div class="oa-order-actions">
@@ -3026,6 +3143,338 @@ async function cancelAllOrders() {
   }
 
   if (btn) btn.textContent = 'Cancel All';
+}
+
+// ============ Tab Switching ============
+
+function switchBookTab(tabName) {
+  state.activeBookTab = tabName;
+
+  // Update tab buttons
+  document.querySelectorAll('.oa-tab-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.tab === tabName);
+  });
+
+  // Update tab content visibility
+  document.querySelectorAll('.oa-tab-content').forEach(content => {
+    content.classList.add('hidden');
+  });
+  const activeContent = document.getElementById(`oa-tab-${tabName}`);
+  if (activeContent) activeContent.classList.remove('hidden');
+
+  // Fetch data for the active tab
+  if (tabName === 'orders') {
+    fetchOrders();
+  } else if (tabName === 'tradebook') {
+    fetchTradebook();
+  } else if (tabName === 'positions') {
+    fetchPositions();
+  }
+}
+
+// ============ Tradebook Functions ============
+
+async function fetchTradebook() {
+  if (!settings.apiKey) return;
+
+  state.tradesLoading = true;
+  const list = document.getElementById('oa-tradebook-list');
+  if (list) list.innerHTML = '<div class="oa-loading" style="height: 50px;"></div>';
+
+  const result = await apiCall('/api/v1/tradebook', {});
+  state.tradesLoading = false;
+
+  if (result.status === 'success' && result.data) {
+    state.trades = result.data;
+    // Fetch lot sizes for trades
+    await fetchLotSizesForOrders(state.trades);
+    // Fetch LTPs for all trades via multiquotes
+    await fetchLTPsForItems(state.trades);
+    renderTradebook();
+  } else {
+    state.trades = [];
+    if (list) list.innerHTML = '<div class="oa-empty-state">Failed to fetch tradebook</div>';
+  }
+}
+
+function renderTradebook() {
+  const list = document.getElementById('oa-tradebook-list');
+  if (!list) return;
+
+  if (state.trades.length === 0) {
+    list.innerHTML = '<div class="oa-empty-state">No trades found</div>';
+    updateTradebookStats();
+    return;
+  }
+
+  // Sort by timestamp (recent first)
+  const sorted = [...state.trades].sort((a, b) => {
+    const tA = new Date(a.timestamp).getTime();
+    const tB = new Date(b.timestamp).getTime();
+    if (tA && tB) return tB - tA;
+    return 0;
+  });
+
+  list.innerHTML = sorted.map(t => {
+    const isBuy = t.action === 'BUY';
+    const orderLotSize = getCachedLotSizeForOrder(t);
+    const qty = parseInt(t.quantity) || 0;
+    const displayLots = orderLotSize > 0 ? Math.floor(qty / orderLotSize) : qty;
+
+    // Extract time from timestamp using helper function
+    const timeStr = extractTimeFromTimestamp(t.timestamp);
+
+    return `
+      <div class="oa-order-item">
+        <div class="oa-order-row-top">
+          <span class="oa-order-symbol">${t.symbol}
+            <span class="oa-order-tag ${isBuy ? 'buy' : 'sell'}">${t.action}</span>
+            <span class="oa-order-tag">${t.product}</span>
+          </span>
+          <span style="font-size:9px;color:#888;">${timeStr}</span>
+        </div>
+        <div class="oa-order-row-details">
+          <span>Lots: ${displayLots} • Avg: ${t.average_price} • LTP: ${(t.ltp || 0).toFixed(2)} • Value: ${t.trade_value}</span>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  updateTradebookStats();
+}
+
+function updateTradebookStats() {
+  const statsEl = document.getElementById('oa-tradebook-stats');
+  if (!statsEl) return;
+
+  const total = state.trades.length;
+  const buys = state.trades.filter(t => t.action === 'BUY').length;
+  const sells = state.trades.filter(t => t.action === 'SELL').length;
+
+  statsEl.textContent = `Total: ${total} • Buy: ${buys} • Sell: ${sells}`;
+}
+
+// ============ Positions Functions ============
+
+async function fetchPositions() {
+  if (!settings.apiKey) return;
+
+  state.positionsLoading = true;
+  const list = document.getElementById('oa-positions-list');
+  if (list) list.innerHTML = '<div class="oa-loading" style="height: 50px;"></div>';
+
+  const result = await apiCall('/api/v1/positionbook', {});
+  state.positionsLoading = false;
+
+  if (result.status === 'success' && result.data) {
+    state.positions = result.data;
+    // Fetch lot sizes for positions
+    await fetchLotSizesForOrders(state.positions);
+    // LTP is already available in the position response, no need to call multiquotes
+    renderPositions();
+  } else {
+    state.positions = [];
+    if (list) list.innerHTML = '<div class="oa-empty-state">Failed to fetch positions</div>';
+  }
+}
+
+function renderPositions() {
+  const list = document.getElementById('oa-positions-list');
+  if (!list) return;
+
+  if (state.positions.length === 0) {
+    list.innerHTML = '<div class="oa-empty-state">No positions found</div>';
+    updatePositionsStats();
+    return;
+  }
+
+  list.innerHTML = state.positions.map(p => {
+    const qty = parseInt(p.quantity) || 0;
+    const isOpen = qty !== 0;
+    const isLong = qty > 0;
+    const orderLotSize = getCachedLotSizeForOrder(p);
+    const displayLots = orderLotSize > 0 ? Math.floor(Math.abs(qty) / orderLotSize) : Math.abs(qty);
+
+    // Use pnl field from API response
+    const pnl = parseFloat(p.pnl) || 0;
+    const unrealizedPnl = parseFloat(p.unrealized_pnl) || 0;
+    const ltp = parseFloat(p.ltp) || 0;
+    const avgPrice = parseFloat(p.average_price) || 0;
+    const pnlClass = pnl >= 0 ? 'profit' : 'loss';
+    const pnlSign = pnl >= 0 ? '+' : '';
+
+    // Show unrealized PnL in braces if present
+    let pnlDisplay = `${pnlSign}${pnl.toFixed(2)}`;
+    if (unrealizedPnl !== 0) {
+      const unrealizedSign = unrealizedPnl >= 0 ? '+' : '';
+      pnlDisplay += ` (${unrealizedSign}${unrealizedPnl.toFixed(2)} unrealized)`;
+    }
+
+    // Tag for position state
+    let posTag = '';
+    let posTagClass = '';
+    if (qty > 0) {
+      posTag = 'LONG';
+      posTagClass = 'buy';
+    } else if (qty < 0) {
+      posTag = 'SHORT';
+      posTagClass = 'sell';
+    } else {
+      posTag = 'FLAT';
+      posTagClass = '';
+    }
+
+    return `
+      <div class="oa-order-item" data-symbol="${p.symbol}" data-exchange="${p.exchange}" data-product="${p.product}" data-qty="${qty}">
+        <div class="oa-order-row-top">
+          <span class="oa-order-symbol">${p.symbol}
+            <span class="oa-order-tag ${posTagClass}">${posTag}</span>
+            <span class="oa-order-tag">${p.product}</span>
+          </span>
+          <span class="oa-footer-pnl ${pnlClass}">${pnlDisplay}</span>
+        </div>
+        <div class="oa-order-row-details">
+          <span>Lots: ${displayLots} • Avg: ${avgPrice.toFixed(2)} • LTP: ${ltp.toFixed(2)}</span>
+          <div style="display:flex;align-items:center;gap:6px;">
+            <span style="font-size:9px;color:#888;">${p.exchange}</span>
+            <button class="oa-order-action-btn edit ${isOpen ? '' : 'hover-only'}" title="Edit Position" data-symbol="${p.symbol}" data-exchange="${p.exchange}" data-product="${p.product}">✏️</button>
+          </div>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  // Add edit listeners for positions
+  list.querySelectorAll('.oa-order-action-btn.edit').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const item = e.target.closest('.oa-order-item');
+      enterPositionEditMode(item);
+    });
+  });
+
+  updatePositionsStats();
+}
+
+function enterPositionEditMode(item) {
+  const symbol = item.dataset.symbol;
+  const exchange = item.dataset.exchange;
+  const product = item.dataset.product;
+  const qty = parseInt(item.dataset.qty) || 0;
+
+  const position = state.positions.find(p => p.symbol === symbol && p.exchange === exchange);
+  if (!position) return;
+
+  const orderLotSize = getCachedLotSizeForOrder(position);
+  const currentLots = orderLotSize > 0 ? Math.floor(Math.abs(qty) / orderLotSize) : Math.abs(qty);
+  const isLong = qty > 0;
+
+  item.innerHTML = `
+    <div class="oa-order-row-top" style="margin-bottom: 8px;">
+      <span class="oa-order-symbol">${symbol} <span style="font-size:9px;color:#666;">Editing...</span></span>
+    </div>
+    <div style="display:flex;gap:4px;margin-bottom:6px;align-items:center;">
+      <div style="flex:1;">
+        <label style="font-size:8px;color:#666;display:block;">Target Lots</label>
+        <input type="number" id="edit-pos-lots" value="${currentLots}" min="0" class="oa-small-input" style="width:100%;">
+      </div>
+      <div style="flex:1;font-size:9px;color:#888;">
+        Current: ${isLong ? '+' : '-'}${currentLots} lots
+      </div>
+    </div>
+    <div style="display:flex;gap:4px;justify-content:flex-end;">
+      <button class="oa-btn success" id="save-pos-edit" style="padding:2px 8px;font-size:9px;">Resize</button>
+      <button class="oa-btn" id="cancel-pos-edit" style="padding:2px 8px;font-size:9px;background:#333;color:#ccc;">Cancel</button>
+    </div>
+  `;
+
+  document.getElementById('save-pos-edit')?.addEventListener('click', () => resizePosition(symbol, exchange, product, qty, orderLotSize));
+  document.getElementById('cancel-pos-edit')?.addEventListener('click', () => renderPositions());
+}
+
+async function resizePosition(symbol, exchange, product, currentQty, lotSize) {
+  const lotsInput = document.getElementById('edit-pos-lots');
+  if (!lotsInput) return;
+
+  const targetLots = parseInt(lotsInput.value) || 0;
+  const targetQty = targetLots * lotSize;
+  const currentLots = Math.floor(Math.abs(currentQty) / lotSize);
+
+  // Determine action based on current position and target
+  const isLong = currentQty > 0;
+  const isShort = currentQty < 0;
+
+  let action = '';
+  let quantity = 0;
+  let position_size = targetQty;
+
+  // Use smart order API to resize
+  const btn = document.getElementById('save-pos-edit');
+  if (btn) { btn.textContent = '...'; btn.disabled = true; }
+
+  const result = await apiCall('/api/v1/placesmartorder', {
+    strategy: 'Chrome',
+    symbol: symbol,
+    exchange: exchange,
+    action: isLong ? 'BUY' : (isShort ? 'SELL' : 'BUY'), // Keep same direction
+    product: product,
+    pricetype: 'MARKET',
+    quantity: String(Math.abs(position_size)), // Quantity must be positive
+    price: '0',
+    trigger_price: '0',
+    position_size: String(position_size)
+  });
+
+  if (result.status === 'success') {
+    showNotification(`Position resized to ${targetLots} lots`, 'success');
+    fetchPositions();
+  } else {
+    showNotification(`Resize failed: ${result.message}`, 'error');
+    if (btn) { btn.textContent = 'Resize'; btn.disabled = false; }
+  }
+}
+
+function updatePositionsStats() {
+  const statsEl = document.getElementById('oa-positions-stats');
+  const pnlEl = document.getElementById('oa-positions-pnl');
+  if (!statsEl) return;
+
+  const openPositions = state.positions.filter(p => parseInt(p.quantity) !== 0);
+  const longs = openPositions.filter(p => parseInt(p.quantity) > 0).length;
+  const shorts = openPositions.filter(p => parseInt(p.quantity) < 0).length;
+
+  statsEl.textContent = `Open: ${openPositions.length} (L${longs} S${shorts})`;
+
+  // Calculate total PnL from pnl field of each position
+  if (pnlEl) {
+    let totalPnl = 0;
+    state.positions.forEach(p => {
+      totalPnl += parseFloat(p.pnl) || 0;
+    });
+
+    const pnlClass = totalPnl >= 0 ? 'profit' : 'loss';
+    const pnlSign = totalPnl >= 0 ? '+' : '';
+    pnlEl.textContent = `Total: ${pnlSign}${totalPnl.toFixed(2)}`;
+    pnlEl.className = `oa-footer-pnl ${pnlClass}`;
+  }
+}
+
+async function closeAllPositions() {
+  const btn = document.getElementById('oa-close-all-btn');
+  if (btn) btn.textContent = 'Closing...';
+
+  const result = await apiCall('/api/v1/closeposition', {
+    strategy: 'Chrome'
+  });
+
+  if (result.status === 'success') {
+    showNotification('All positions squared off', 'success');
+    fetchPositions();
+  } else {
+    showNotification(`Close failed: ${result.message}`, 'error');
+  }
+
+  if (btn) btn.textContent = 'Close All';
 }
 
 // Listen for messages
