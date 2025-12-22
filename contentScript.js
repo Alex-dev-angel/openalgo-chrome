@@ -39,6 +39,7 @@ let state = {
   // Positions state
   positions: [],
   positionsLoading: false,
+  positionsFilter: 'open', // 'open' or 'closed'
   // Active tab in orders dropdown
   activeBookTab: 'orders' // 'orders', 'tradebook', 'positions'
 };
@@ -1456,6 +1457,10 @@ function buildScalpingUI() {
       </div>
       <!-- Positions Tab -->
       <div id="oa-tab-positions" class="oa-tab-content hidden">
+        <div class="oa-orders-filters">
+          <button class="oa-filter-btn active" data-filter="open" id="oa-pos-filter-open">Open</button>
+          <button class="oa-filter-btn" data-filter="closed" id="oa-pos-filter-closed">Closed</button>
+        </div>
         <div id="oa-positions-list" class="oa-orders-list"></div>
         <div class="oa-orders-footer" id="oa-positions-footer">
           <button id="oa-refresh-positions" class="oa-footer-btn refresh">↻ Refresh</button>
@@ -1850,18 +1855,21 @@ function setupScalpingEvents(container) {
   // Orders button
   container.querySelector('#oa-orders-btn')?.addEventListener('click', () => toggleOrdersDropdown());
 
-  // Orders filters
-  const filterBtns = container.querySelectorAll('.oa-filter-btn');
-  filterBtns.forEach(btn => {
-    btn.addEventListener('click', (e) => {
-      filterBtns.forEach(b => b.classList.remove('active'));
-      e.target.classList.add('active');
-      state.ordersFilter = e.target.dataset.filter;
-      renderOrders();
+  // Orders filters (in orders tab only)
+  const ordersTab = container.querySelector('#oa-tab-orders');
+  if (ordersTab) {
+    const orderFilterBtns = ordersTab.querySelectorAll('.oa-filter-btn');
+    orderFilterBtns.forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        orderFilterBtns.forEach(b => b.classList.remove('active'));
+        e.target.classList.add('active');
+        state.ordersFilter = e.target.dataset.filter;
+        renderOrders();
+      });
     });
-  });
-  const defaultFilter = container.querySelector(`.oa-filter-btn[data-filter="${state.ordersFilter}"]`);
-  if (defaultFilter) defaultFilter.classList.add('active');
+    const defaultOrderFilter = ordersTab.querySelector(`.oa-filter-btn[data-filter="${state.ordersFilter}"]`);
+    if (defaultOrderFilter) defaultOrderFilter.classList.add('active');
+  }
 
   // Orders refresh
   container.querySelector('#oa-refresh-orders')?.addEventListener('click', () => fetchOrders());
@@ -1878,6 +1886,22 @@ function setupScalpingEvents(container) {
 
   // Tradebook refresh
   container.querySelector('#oa-refresh-tradebook')?.addEventListener('click', () => fetchTradebook());
+
+  // Positions filters (in positions tab only)
+  const positionsTab = container.querySelector('#oa-tab-positions');
+  if (positionsTab) {
+    const posFilterBtns = positionsTab.querySelectorAll('.oa-filter-btn');
+    posFilterBtns.forEach(btn => {
+      btn.addEventListener('click', (e) => {
+        posFilterBtns.forEach(b => b.classList.remove('active'));
+        e.target.classList.add('active');
+        state.positionsFilter = e.target.dataset.filter;
+        renderPositions();
+      });
+    });
+    const defaultPosFilter = positionsTab.querySelector(`.oa-filter-btn[data-filter="${state.positionsFilter}"]`);
+    if (defaultPosFilter) defaultPosFilter.classList.add('active');
+  }
 
   // Positions refresh
   container.querySelector('#oa-refresh-positions')?.addEventListener('click', () => fetchPositions());
@@ -2992,7 +3016,7 @@ function renderOrders() {
           <span class="oa-order-status ${finalStatusClass}">${o.order_status}</span>
         </div>
         <div class="oa-order-row-details">
-          <span>Lots: ${displayLots} • Price: ${o.price}${o.trigger_price > 0 ? ' • Trg: ' + o.trigger_price : ''} • LTP: ${(o.ltp || 0).toFixed(2)}</span>
+          <span>Lots: ${displayLots}${o.trigger_price > 0 ? ' • Trg: ' + o.trigger_price : ''} • Price: ${o.price} • LTP: ${(o.ltp || 0).toFixed(2)}</span>
           <div style="display:flex;align-items:center;gap:6px;">
             ${timeStr ? `<span style="font-size:9px;color:#888;">${timeStr}</span>` : ''}
             <div class="oa-order-actions">
@@ -3047,15 +3071,15 @@ function enterEditMode(orderId) {
         <label style="font-size:8px;color:#666;display:block;">Lots</label>
         <input type="number" id="edit-lots-${orderId}" value="${displayLots}" class="oa-small-input" style="width:100%;">
       </div>
-      <div style="flex:1;">
-        <label style="font-size:8px;color:#666;display:block;">Price</label>
-        <input type="number" id="edit-price-${orderId}" value="${order.price}" class="oa-small-input" style="width:100%;">
-      </div>
       ${isTrigger ? `
       <div style="flex:1;">
         <label style="font-size:8px;color:#666;display:block;">Trg Prc</label>
         <input type="number" id="edit-trg-${orderId}" value="${order.trigger_price || 0}" class="oa-small-input" style="width:100%;">
       </div>` : ''}
+      <div style="flex:1;">
+        <label style="font-size:8px;color:#666;display:block;">Price</label>
+        <input type="number" id="edit-price-${orderId}" value="${order.price}" class="oa-small-input" style="width:100%;">
+      </div>
     </div>
     <div style="display:flex;gap:4px;justify-content:flex-end;">
       <button class="oa-btn success" id="save-edit-${orderId}" style="padding:2px 8px;font-size:9px;">Save</button>
@@ -3282,13 +3306,21 @@ function renderPositions() {
   const list = document.getElementById('oa-positions-list');
   if (!list) return;
 
-  if (state.positions.length === 0) {
-    list.innerHTML = '<div class="oa-empty-state">No positions found</div>';
+  // Filter positions based on state.positionsFilter (open/closed)
+  const filtered = state.positions.filter(p => {
+    const qty = parseInt(p.quantity) || 0;
+    if (state.positionsFilter === 'open') return qty !== 0;
+    if (state.positionsFilter === 'closed') return qty === 0;
+    return true;
+  });
+
+  if (filtered.length === 0) {
+    list.innerHTML = `<div class="oa-empty-state">No ${state.positionsFilter || 'open'} positions found</div>`;
     updatePositionsStats();
     return;
   }
 
-  list.innerHTML = state.positions.map(p => {
+  list.innerHTML = filtered.map(p => {
     const qty = parseInt(p.quantity) || 0;
     const isOpen = qty !== 0;
     const isLong = qty > 0;
@@ -3334,10 +3366,11 @@ function renderPositions() {
           <span class="oa-footer-pnl ${pnlClass}">${pnlDisplay}</span>
         </div>
         <div class="oa-order-row-details">
-          <span>Lots: ${displayLots} • Avg: ${avgPrice.toFixed(2)} • LTP: ${ltp.toFixed(2)}</span>
+          <span>Lots: ${isLong ? '+' : (qty < 0 ? '-' : '')}${displayLots} • Avg: ${avgPrice.toFixed(2)} • LTP: ${ltp.toFixed(2)}</span>
           <div style="display:flex;align-items:center;gap:6px;">
             <span style="font-size:9px;color:#888;">${p.exchange}</span>
-            <button class="oa-order-action-btn edit ${isOpen ? '' : 'hover-only'}" title="Edit Position" data-symbol="${p.symbol}" data-exchange="${p.exchange}" data-product="${p.product}">✏️</button>
+            ${isOpen ? `<button class="oa-order-action-btn close hover-only" title="Square Off" data-symbol="${p.symbol}" data-exchange="${p.exchange}" data-product="${p.product}">✖</button>` : ''}
+            <button class="oa-order-action-btn edit hover-only" title="Edit Position" data-symbol="${p.symbol}" data-exchange="${p.exchange}" data-product="${p.product}">✏️</button>
           </div>
         </div>
       </div>
@@ -3350,6 +3383,14 @@ function renderPositions() {
       e.stopPropagation();
       const item = e.target.closest('.oa-order-item');
       enterPositionEditMode(item);
+    });
+  });
+
+  // Add close/square-off listeners for open positions
+  list.querySelectorAll('.oa-order-action-btn.close').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      squareOffPosition(btn.dataset.symbol, btn.dataset.exchange, btn.dataset.product);
     });
   });
 
@@ -3368,69 +3409,379 @@ function enterPositionEditMode(item) {
   const orderLotSize = getCachedLotSizeForOrder(position);
   const currentLots = orderLotSize > 0 ? Math.floor(Math.abs(qty) / orderLotSize) : Math.abs(qty);
   const isLong = qty > 0;
+  const isShort = qty < 0;
+  const isFlat = qty === 0;
+
+  // For flat positions, default to long direction
+  const currentSign = isLong ? '+' : (isShort ? '-' : '+');
+  const positionLabel = isLong ? 'LONG' : (isShort ? 'SHORT' : 'FLAT');
+  const positionColor = isLong ? '#00c853' : (isShort ? '#ff5252' : '#888');
+
+  // Initial target = current with sign (negative for short)
+  const initialTargetLots = isShort ? -currentLots : currentLots;
+  const initialPctSign = isShort ? '-' : '+';
+
+  // Generate unique ID for this edit session to properly handle cleanup
+  const editId = `pos-edit-${Date.now()}`;
+  item.dataset.editId = editId;
 
   item.innerHTML = `
-    <div class="oa-order-row-top" style="margin-bottom: 8px;">
+    <style>
+      .oa-pos-edit-row1 { display: flex !important; justify-content: space-between !important; align-items: center !important; margin-bottom: 8px !important; }
+      .oa-pos-edit-row2 { display: flex !important; justify-content: space-between !important; align-items: center !important; gap: 8px !important; }
+      .oa-pos-current { font-size: 11px !important; font-weight: 600 !important; }
+      .oa-pos-target-group { display: flex !important; align-items: center !important; gap: 6px !important; }
+      .oa-pos-target-label { font-size: 10px !important; color: #888 !important; white-space: nowrap !important; }
+      .oa-pos-target-input { 
+        width: 60px !important; padding: 4px 6px !important; border: 1px solid #444 !important; 
+        border-radius: 4px !important; background: #1a1a1a !important; color: #fff !important; 
+        font-size: 11px !important; text-align: center !important;
+      }
+
+      .oa-pos-pct-trigger {
+        padding: 4px 8px !important; font-size: 10px !important; border: 1px solid #444 !important;
+        border-radius: 4px !important; background: #222 !important; color: #aaa !important; cursor: pointer !important;
+      }
+      .oa-pos-pct-trigger:hover { background: #333 !important; color: #fff !important; }
+      .oa-pos-pct-popup {
+        position: absolute !important; top: 100% !important; left: 0 !important; z-index: 100 !important;
+        background: #1a1a1a !important; border: 1px solid #444 !important; border-radius: 6px !important;
+        padding: 8px !important; margin-top: 4px !important; min-width: 220px !important;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.4) !important; display: none !important;
+      }
+      .oa-pos-pct-popup.show { display: block !important; }
+      .oa-pos-toggle-row { display: flex !important; gap: 4px !important; margin-bottom: 6px !important; }
+      .oa-pos-toggle-btn { 
+        flex: 1 !important; padding: 4px 8px !important; font-size: 9px !important; border: 1px solid #444 !important; 
+        border-radius: 4px !important; background: #222 !important; color: #888 !important; cursor: pointer !important;
+        text-align: center !important;
+      }
+      .oa-pos-toggle-btn.active { background: #333 !important; color: #fff !important; border-color: #666 !important; }
+      .oa-pos-pct-row { display: flex !important; gap: 4px !important; }
+      .oa-pos-pct-btn { 
+        flex: 1 !important; padding: 4px 0 !important; font-size: 9px !important; border: 1px solid #444 !important; 
+        border-radius: 4px !important; background: #222 !important; color: #aaa !important; 
+        cursor: pointer !important; text-align: center !important;
+      }
+      .oa-pos-pct-btn:hover { background: #444 !important; color: #fff !important; }
+      .oa-pos-custom-btn {
+        flex: 1 !important; padding: 4px 0 !important; font-size: 9px !important; border: 1px solid #444 !important;
+        border-radius: 4px !important; background: #222 !important; color: #aaa !important;
+        cursor: pointer !important; text-align: center !important; position: relative !important;
+      }
+      .oa-pos-custom-btn:hover { background: #444 !important; color: #fff !important; }
+      .oa-pos-custom-btn.editing {
+        padding: 0 !important;
+      }
+      .oa-pos-custom-input { 
+        width: 100% !important; padding: 4px 2px !important; font-size: 9px !important; 
+        border: none !important; border-radius: 4px !important; 
+        background: transparent !important; color: #fff !important; text-align: center !important;
+        outline: none !important;
+      }
+      .oa-pos-buttons { display: flex !important; gap: 6px !important; margin-left: auto !important; }
+      .oa-pos-action-btn { 
+        padding: 5px 10px !important; font-size: 10px !important; font-weight: 600 !important; 
+        border: none !important; border-radius: 4px !important; cursor: pointer !important;
+      }
+      .oa-pos-action-btn.buy { background: #00c853 !important; color: #fff !important; }
+      .oa-pos-action-btn.sell { background: #ff5252 !important; color: #fff !important; }
+      .oa-pos-action-btn.neutral { background: #555 !important; color: #fff !important; }
+      .oa-pos-cancel-btn { 
+        padding: 5px 10px !important; font-size: 10px !important; background: #333 !important; 
+        color: #ccc !important; border: none !important; border-radius: 4px !important; cursor: pointer !important;
+      }
+      .oa-light-theme .oa-pos-target-input { background: #f5f5f5 !important; color: #222 !important; border-color: #ddd !important; }
+      .oa-light-theme .oa-pos-pct-trigger { background: #e0e0e0 !important; color: #666 !important; border-color: #ccc !important; }
+      .oa-light-theme .oa-pos-pct-popup { background: #fff !important; border-color: #ddd !important; }
+      .oa-light-theme .oa-pos-toggle-btn { background: #e0e0e0 !important; color: #666 !important; border-color: #ccc !important; }
+      .oa-light-theme .oa-pos-toggle-btn.active { background: #d0d0d0 !important; color: #222 !important; }
+      .oa-light-theme .oa-pos-pct-btn { background: #e0e0e0 !important; color: #666 !important; border-color: #ccc !important; }
+      .oa-light-theme .oa-pos-pct-btn:hover { background: #d0d0d0 !important; color: #222 !important; }
+      .oa-light-theme .oa-pos-custom-btn { background: #e0e0e0 !important; color: #666 !important; border-color: #ccc !important; }
+      .oa-light-theme .oa-pos-custom-input { color: #222 !important; }
+    </style>
+    <div class="oa-pos-edit-row1">
       <span class="oa-order-symbol">${symbol} <span style="font-size:9px;color:#666;">Editing...</span></span>
+      <span class="oa-pos-current">Current: <span style="color:${positionColor};">${positionLabel}</span> (${currentSign}${currentLots} lots)</span>
     </div>
-    <div style="display:flex;gap:4px;margin-bottom:6px;align-items:center;">
-      <div style="flex:1;">
-        <label style="font-size:8px;color:#666;display:block;">Target Lots</label>
-        <input type="number" id="edit-pos-lots" value="${currentLots}" min="0" class="oa-small-input" style="width:100%;">
+    <div class="oa-pos-edit-row2">
+      <div class="oa-pos-target-group">
+        <span class="oa-pos-target-label">Target:</span>
+        <input type="number" id="edit-pos-lots-${editId}" value="${initialTargetLots}" class="oa-pos-target-input">
+        <div style="position:relative;">
+          <button class="oa-pos-pct-trigger" id="pos-pct-trigger-${editId}">%</button>
+          <div class="oa-pos-pct-popup" id="pos-pct-popup-${editId}">
+            <div class="oa-pos-toggle-row">
+              <button class="oa-pos-toggle-btn active" id="pos-mode-add-${editId}">Add</button>
+              <button class="oa-pos-toggle-btn" id="pos-mode-exit-${editId}">Exit</button>
+            </div>
+            <div class="oa-pos-pct-row" id="pos-pct-buttons-${editId}">
+              <button class="oa-pos-pct-btn" data-pct="25">${initialPctSign}25%</button>
+              <button class="oa-pos-pct-btn" data-pct="50">${initialPctSign}50%</button>
+              <button class="oa-pos-pct-btn" data-pct="75">${initialPctSign}75%</button>
+              <button class="oa-pos-pct-btn" data-pct="100">${initialPctSign}100%</button>
+              <button class="oa-pos-custom-btn" id="pos-custom-btn-${editId}">✏️</button>
+            </div>
+          </div>
+        </div>
       </div>
-      <div style="flex:1;font-size:9px;color:#888;">
-        Current: ${isLong ? '+' : '-'}${currentLots} lots
+      <div class="oa-pos-buttons">
+        <button class="oa-pos-action-btn neutral" id="save-pos-edit-${editId}">No Change</button>
+        <button class="oa-pos-cancel-btn" id="cancel-pos-edit-${editId}">Cancel</button>
       </div>
-    </div>
-    <div style="display:flex;gap:4px;justify-content:flex-end;">
-      <button class="oa-btn success" id="save-pos-edit" style="padding:2px 8px;font-size:9px;">Resize</button>
-      <button class="oa-btn" id="cancel-pos-edit" style="padding:2px 8px;font-size:9px;background:#333;color:#ccc;">Cancel</button>
     </div>
   `;
 
-  document.getElementById('save-pos-edit')?.addEventListener('click', () => resizePosition(symbol, exchange, product, qty, orderLotSize));
-  document.getElementById('cancel-pos-edit')?.addEventListener('click', () => renderPositions());
+  // Setup event handlers
+  setupPositionEditHandlers(item, editId, symbol, exchange, product, qty, orderLotSize, currentLots, isLong, isShort);
 }
 
-async function resizePosition(symbol, exchange, product, currentQty, lotSize) {
-  const lotsInput = document.getElementById('edit-pos-lots');
+// Helper function to set up position edit event handlers
+function setupPositionEditHandlers(item, editId, symbol, exchange, product, qty, orderLotSize, currentLots, isLong, isShort) {
+  const lotsInput = document.getElementById(`edit-pos-lots-${editId}`);
+  const pctTrigger = document.getElementById(`pos-pct-trigger-${editId}`);
+  const pctPopup = document.getElementById(`pos-pct-popup-${editId}`);
+  const addBtn = document.getElementById(`pos-mode-add-${editId}`);
+  const exitBtn = document.getElementById(`pos-mode-exit-${editId}`);
+  const pctContainer = document.getElementById(`pos-pct-buttons-${editId}`);
+  const customBtn = document.getElementById(`pos-custom-btn-${editId}`);
+  const actionBtn = document.getElementById(`save-pos-edit-${editId}`);
+  const cancelBtn = document.getElementById(`cancel-pos-edit-${editId}`);
+
+  if (!lotsInput || !actionBtn) return; // Guard against missing elements
+
+  let editMode = 'add'; // 'add' or 'exit'
+  let customPctDebounceTimer = null;
+  let isCustomEditing = false;
+
+  // Toggle popup visibility
+  pctTrigger.addEventListener('click', (e) => {
+    e.stopPropagation();
+    pctPopup.classList.toggle('show');
+  });
+
+  // Close popup when clicking outside (use capture to ensure cleanup)
+  function handleClickOutside(e) {
+    if (pctPopup && !pctPopup.contains(e.target) && e.target !== pctTrigger) {
+      pctPopup.classList.remove('show');
+    }
+  }
+  document.addEventListener('click', handleClickOutside);
+
+  // Store cleanup function on item for removal when re-entering edit
+  item._cleanupEditHandlers = () => {
+    document.removeEventListener('click', handleClickOutside);
+    if (customPctDebounceTimer) clearTimeout(customPctDebounceTimer);
+  };
+
+  // Update button labels based on mode
+  function updatePctButtonLabels() {
+    const pctBtns = pctContainer.querySelectorAll('.oa-pos-pct-btn');
+    const sign = editMode === 'add' ? (isShort ? '-' : '+') : (isShort ? '+' : '-');
+    pctBtns.forEach(btn => {
+      const pct = btn.dataset.pct;
+      if (pct) {
+        btn.textContent = `${sign}${pct}%`;
+      }
+    });
+    // Update custom button text if not editing
+    if (!isCustomEditing) {
+      customBtn.innerHTML = '✏️';
+    }
+  }
+
+  // Calculate and update action button
+  function updateActionButton() {
+    // Target value is signed (negative for short position target)
+    const targetSignedLots = parseInt(lotsInput.value) || 0;
+
+    // Current position in lots (signed)
+    const currentSignedLots = isLong ? currentLots : (isShort ? -currentLots : 0);
+
+    // Calculate change in LOTS
+    const changeLots = targetSignedLots - currentSignedLots;
+
+    if (changeLots === 0) {
+      actionBtn.className = 'oa-pos-action-btn neutral';
+      actionBtn.textContent = 'No Change';
+      actionBtn.dataset.action = 'none';
+    } else if (changeLots > 0) {
+      actionBtn.className = 'oa-pos-action-btn buy';
+      actionBtn.textContent = `BUY +${changeLots} Lots`;
+      actionBtn.dataset.action = 'BUY';
+    } else {
+      actionBtn.className = 'oa-pos-action-btn sell';
+      actionBtn.textContent = `SELL ${changeLots} Lots`;
+      actionBtn.dataset.action = 'SELL';
+    }
+  }
+
+  // Update target lots based on percentage
+  function applyPercentage(pct, closePopup = true) {
+    const calculated = Math.ceil(currentLots * pct / 100);
+    const currentSignedLots = isShort ? -currentLots : currentLots;
+
+    if (editMode === 'add') {
+      // Add: increase position magnitude in same direction
+      const newTarget = isShort ? -(currentLots + calculated) : (currentLots + calculated);
+      lotsInput.value = newTarget;
+    } else {
+      // Exit: reduce position magnitude
+      const reduced = Math.max(0, currentLots - calculated);
+      const newTarget = isShort ? -reduced : reduced;
+      lotsInput.value = newTarget;
+    }
+
+    updateActionButton();
+    if (closePopup) pctPopup.classList.remove('show');
+  }
+
+  // Mode toggle handlers
+  addBtn.addEventListener('click', () => {
+    editMode = 'add';
+    addBtn.classList.add('active');
+    exitBtn.classList.remove('active');
+    updatePctButtonLabels();
+    // Reset to current signed position
+    lotsInput.value = isShort ? -currentLots : currentLots;
+    updateActionButton();
+  });
+
+  exitBtn.addEventListener('click', () => {
+    editMode = 'exit';
+    exitBtn.classList.add('active');
+    addBtn.classList.remove('active');
+    updatePctButtonLabels();
+    // Reset to current signed position
+    lotsInput.value = isShort ? -currentLots : currentLots;
+    updateActionButton();
+  });
+
+  // Percentage button handlers
+  pctContainer.querySelectorAll('.oa-pos-pct-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const pct = parseInt(btn.dataset.pct);
+      if (pct) {
+        applyPercentage(pct);
+      }
+    });
+  });
+
+  // Custom percentage button - show input on click
+  customBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    if (isCustomEditing) return;
+
+    isCustomEditing = true;
+    const sign = editMode === 'add' ? (isShort ? '-' : '+') : (isShort ? '+' : '-');
+    customBtn.classList.add('editing');
+    customBtn.innerHTML = `<input type="number" id="pos-custom-input-${editId}" class="oa-pos-custom-input" placeholder="${sign}%" min="1" max="500" autofocus>`;
+
+    const customInput = document.getElementById(`pos-custom-input-${editId}`);
+    customInput.focus();
+
+    // Auto-calculate on input with 100ms debounce
+    customInput.addEventListener('input', () => {
+      clearTimeout(customPctDebounceTimer);
+      customPctDebounceTimer = setTimeout(() => {
+        const pct = parseInt(customInput.value) || 0;
+        if (pct > 0) {
+          applyPercentage(pct, false); // Don't close popup while typing
+        }
+      }, 100);
+    });
+
+    // Apply on Enter
+    customInput.addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') {
+        const pct = parseInt(customInput.value) || 0;
+        if (pct > 0) {
+          applyPercentage(pct, true);
+          isCustomEditing = false;
+          customBtn.classList.remove('editing');
+          customBtn.innerHTML = `${sign}${pct}%`;
+        }
+      }
+    });
+
+    // Reset on blur
+    customInput.addEventListener('blur', () => {
+      const pct = parseInt(customInput.value) || 0;
+      isCustomEditing = false;
+      customBtn.classList.remove('editing');
+      if (pct > 0) {
+        const sign = editMode === 'add' ? (isShort ? '-' : '+') : (isShort ? '+' : '-');
+        customBtn.innerHTML = `${sign}${pct}%`;
+      } else {
+        customBtn.innerHTML = '✏️';
+      }
+    });
+  });
+
+  // Manual input handler
+  lotsInput.addEventListener('input', updateActionButton);
+
+  // Save handler
+  actionBtn.addEventListener('click', () => {
+    if (actionBtn.dataset.action === 'none') {
+      if (item._cleanupEditHandlers) item._cleanupEditHandlers();
+      renderPositions();
+      return;
+    }
+    if (item._cleanupEditHandlers) item._cleanupEditHandlers();
+    resizePosition(symbol, exchange, product, qty, orderLotSize, editId);
+  });
+
+  // Cancel handler
+  cancelBtn.addEventListener('click', () => {
+    if (item._cleanupEditHandlers) item._cleanupEditHandlers();
+    renderPositions();
+  });
+
+  // Initialize
+  updatePctButtonLabels();
+  updateActionButton();
+}
+
+async function resizePosition(symbol, exchange, product, currentQty, lotSize, editId) {
+  const lotsInput = document.getElementById(`edit-pos-lots-${editId}`);
   if (!lotsInput) return;
 
-  const targetLots = parseInt(lotsInput.value) || 0;
-  const targetQty = targetLots * lotSize;
-  const currentLots = Math.floor(Math.abs(currentQty) / lotSize);
+  // Target is now a signed value (negative for short position target)
+  const targetSignedLots = parseInt(lotsInput.value) || 0;
 
-  // Determine action based on current position and target
+  // Calculate target quantity with proper sign
+  const targetQty = targetSignedLots * lotSize;
+
+  // Determine action based on current position direction
   const isLong = currentQty > 0;
   const isShort = currentQty < 0;
 
-  let action = '';
-  let quantity = 0;
-  let position_size = targetQty;
-
-  // Use smart order API to resize
-  const btn = document.getElementById('save-pos-edit');
-  if (btn) { btn.textContent = '...'; btn.disabled = true; }
+  // Update button to show loading state
+  const btn = document.getElementById(`save-pos-edit-${editId}`);
+  const originalText = btn ? btn.textContent : 'Resize';
+  if (btn) { btn.textContent = 'Placing...'; btn.disabled = true; }
 
   const result = await apiCall('/api/v1/placesmartorder', {
     strategy: 'Chrome',
     symbol: symbol,
     exchange: exchange,
-    action: isLong ? 'BUY' : (isShort ? 'SELL' : 'BUY'), // Keep same direction
+    action: isLong ? 'BUY' : (isShort ? 'SELL' : 'BUY'), // Keep same direction for reference
     product: product,
     pricetype: 'MARKET',
-    quantity: String(Math.abs(position_size)), // Quantity must be positive
+    quantity: String(Math.abs(targetQty)), // Quantity must be positive
     price: '0',
     trigger_price: '0',
-    position_size: String(position_size)
+    position_size: String(targetQty)
   });
 
   if (result.status === 'success') {
-    showNotification(`Position resized to ${targetLots} lots`, 'success');
-    fetchPositions();
+    showNotification(`Position resized to ${targetSignedLots} lots`, 'success');
+    renderPositions(); // Just re-render, no API refetch
   } else {
     showNotification(`Resize failed: ${result.message}`, 'error');
-    if (btn) { btn.textContent = 'Resize'; btn.disabled = false; }
+    if (btn) { btn.textContent = originalText; btn.disabled = false; }
   }
 }
 
@@ -3475,6 +3826,47 @@ async function closeAllPositions() {
   }
 
   if (btn) btn.textContent = 'Close All';
+}
+
+// Square off a single position instantly (set position to 0)
+async function squareOffPosition(symbol, exchange, product) {
+  // Find the position to get current qty for display
+  const position = state.positions.find(p => p.symbol === symbol && p.exchange === exchange && p.product === product);
+  if (!position) {
+    showNotification('Position not found', 'error');
+    return;
+  }
+
+  const qty = parseInt(position.quantity) || 0;
+  if (qty === 0) {
+    showNotification('Position already closed', 'info');
+    return;
+  }
+
+  // Determine action based on current position (need opposite to close)
+  const action = qty > 0 ? 'SELL' : 'BUY';
+
+  const result = await apiCall('/api/v1/placesmartorder', {
+    strategy: 'Chrome',
+    symbol: symbol,
+    exchange: exchange,
+    action: action,
+    product: product,
+    pricetype: 'MARKET',
+    quantity: '0',
+    price: '0',
+    trigger_price: '0',
+    position_size: '0'
+  });
+
+  if (result.status === 'success') {
+    showNotification(`${symbol} position squared off`, 'success');
+    // Update local state to reflect closed position
+    if (position) position.quantity = 0;
+    renderPositions();
+  } else {
+    showNotification(`Square off failed: ${result.message}`, 'error');
+  }
 }
 
 // Listen for messages
