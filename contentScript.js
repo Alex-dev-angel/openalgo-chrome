@@ -41,7 +41,10 @@ let state = {
   positionsLoading: false,
   positionsFilter: 'open', // 'open' or 'closed'
   // Active tab in orders dropdown
-  activeBookTab: 'orders' // 'orders', 'tradebook', 'positions'
+  activeBookTab: 'orders', // 'orders', 'tradebook', 'positions'
+  // SL (Stop Loss) panel state
+  slOrders: [], // Filtered SL/SL-M orders for current position
+  slPanelOpen: false // Track SL panel visibility
 };
 
 let isInitialized = false;
@@ -568,6 +571,7 @@ async function _fetchOpenPosition() {
       netposEl.dataset.qty = quantity.toString();
       netposEl.value = toLots(quantity).toString(); // Sync display value
       updateResizeButton(); // Update button to "Resize 0"
+      fetchSLOrdersForPosition(); // Update SL button state
     }
   }
 }
@@ -1062,6 +1066,7 @@ function updateNetPosDisplay(quantity) {
     el.dataset.qty = quantity.toString();
     el.value = displayValue.toString();
     updateResizeButton();
+    updateSLButton(); // Update SL button state
   }
 }
 
@@ -1124,6 +1129,469 @@ function updateResizeButton() {
     btn.className = 'oa-resize-btn';
     btn.textContent = `Resize ${displayQty}`;
     btn.title = `Resize position to ${displayQty} lots`;
+  }
+}
+
+// ============ SL (Stop Loss) Functions ============
+
+function updateSLButton() {
+  const btn = document.getElementById('oa-sl-btn');
+  if (!btn) return;
+
+  const netposEl = document.getElementById('oa-netpos');
+  const currentQty = netposEl ? parseInt(netposEl.dataset.qty || '0') : 0;
+
+  if (currentQty === 0) {
+    // No open position - disable SL button and close panel if open
+    btn.disabled = true;
+    btn.className = 'oa-sl-btn neutral';
+    btn.title = 'No open position';
+    // Auto-close SL panel when button becomes disabled
+    toggleSLPanel(false);
+  } else {
+    // Has open position - enable SL button
+    btn.disabled = false;
+    btn.className = 'oa-sl-btn' + (state.slOrders.length > 0 ? ' has-orders' : '');
+    btn.title = `Manage SL (${state.slOrders.length} orders)`;
+  }
+}
+
+async function fetchSLOrdersForPosition() {
+  if (!settings.apiKey || !state.selectedSymbol) {
+    state.slOrders = [];
+    return;
+  }
+
+  const netposEl = document.getElementById('oa-netpos');
+  const currentQty = netposEl ? parseInt(netposEl.dataset.qty || '0') : 0;
+
+  if (currentQty === 0) {
+    state.slOrders = [];
+    updateSLButton();
+    return;
+  }
+
+  // Determine the opposite action for SL orders
+  // For LONG position (qty > 0), SL orders should be SELL
+  // For SHORT position (qty < 0), SL orders should be BUY
+  const slAction = currentQty > 0 ? 'SELL' : 'BUY';
+
+  const result = await apiCall('/api/v1/orderbook', {});
+
+  if (result.status === 'success' && result.data && result.data.orders) {
+    // Filter for SL/SL-M orders matching the current symbol and opposite action
+    state.slOrders = result.data.orders.filter(o => {
+      const status = (o.order_status || '').toLowerCase();
+      const isPending = ['open', 'trigger pending', 'validation pending', 'put order req received'].includes(status);
+      const isSL = ['SL', 'SL-M'].includes(o.pricetype);
+      const matchesSymbol = o.symbol === state.selectedSymbol;
+      const matchesAction = o.action === slAction;
+
+      return isPending && isSL && matchesSymbol && matchesAction;
+    });
+
+    // Fetch lot sizes for SL orders
+    if (state.slOrders.length > 0) {
+      await fetchLotSizesForOrders(state.slOrders);
+    }
+  } else {
+    state.slOrders = [];
+  }
+
+  updateSLButton();
+}
+
+function toggleSLPanel(show) {
+  const panel = document.getElementById('oa-sl-panel');
+  if (!panel) return;
+
+  const isShow = show !== undefined ? show : panel.classList.contains('hidden');
+
+  if (isShow) {
+    // Close other panels first
+    toggleStrikeDropdown(false);
+    toggleOrdersDropdown(false);
+    const settingsPanel = document.getElementById('oa-settings-panel');
+    if (settingsPanel) settingsPanel.classList.add('hidden');
+    const refreshPanel = document.getElementById('oa-refresh-panel');
+    if (refreshPanel) refreshPanel.classList.add('hidden');
+
+    // Fetch latest SL orders and render
+    fetchSLOrdersForPosition().then(() => {
+      renderSLPanel();
+      panel.classList.remove('hidden');
+    });
+  } else {
+    panel.classList.add('hidden');
+  }
+
+  state.slPanelOpen = isShow;
+}
+
+function renderSLPanel() {
+  const list = document.getElementById('oa-sl-list');
+  const posInfoEl = document.getElementById('oa-sl-position-info');
+  const remainingInput = document.getElementById('oa-sl-remaining-lots');
+
+  if (!list) return;
+
+  const netposEl = document.getElementById('oa-netpos');
+  const currentQty = netposEl ? parseInt(netposEl.dataset.qty || '0') : 0;
+  const currentLots = toLots(Math.abs(currentQty));
+  const positionType = currentQty > 0 ? 'LONG' : currentQty < 0 ? 'SHORT' : 'FLAT';
+
+  // Update position info
+  if (posInfoEl) {
+    posInfoEl.textContent = `${positionType} ${currentLots} lots`;
+  }
+
+  // Calculate covered lots
+  let coveredLots = 0;
+  state.slOrders.forEach(o => {
+    const orderLotSize = getCachedLotSizeForOrder(o);
+    const qty = parseInt(o.quantity) || 0;
+    coveredLots += orderLotSize > 0 ? Math.floor(qty / orderLotSize) : qty;
+  });
+
+  // Calculate remaining lots with sign based on position direction
+  const absRemainingLots = Math.max(0, currentLots - coveredLots);
+  // For SHORT position (currentQty < 0), show negative sign
+  const signedRemainingLots = currentQty < 0 ? -absRemainingLots : absRemainingLots;
+  if (remainingInput) {
+    remainingInput.value = signedRemainingLots;
+  }
+
+  // Render SL orders
+  if (state.slOrders.length === 0) {
+    list.innerHTML = '<div class="oa-empty-state">No pending SL orders</div>';
+    return;
+  }
+
+  list.innerHTML = state.slOrders.map(o => {
+    const orderLotSize = getCachedLotSizeForOrder(o);
+    const qty = parseInt(o.quantity) || 0;
+    const displayLots = orderLotSize > 0 ? Math.floor(qty / orderLotSize) : qty;
+    const isBuy = o.action === 'BUY';
+    const actionClass = isBuy ? 'buy' : 'sell';
+
+    return `
+      <div class="oa-sl-order-item" data-orderid="${o.orderid}" data-strategy="${o.strategy || 'Chrome'}">
+        <input type="checkbox" class="oa-sl-checkbox" data-orderid="${o.orderid}">
+        <div class="oa-sl-order-info">
+          <div><span class="oa-sl-action-tag ${actionClass}">${o.action}</span>${o.pricetype} ${displayLots} lots</div>
+          <div class="oa-sl-order-details">Trg: ${o.trigger_price || 0} | Price: ${o.price}</div>
+        </div>
+        <div class="oa-order-actions">
+          <button class="oa-order-action-btn edit" data-orderid="${o.orderid}" title="Edit">✏️</button>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  // Add edit listeners
+  list.querySelectorAll('.oa-order-action-btn.edit').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const orderId = btn.dataset.orderid;
+      enterSLEditMode(orderId);
+    });
+  });
+}
+
+function enterSLEditMode(orderId) {
+  const item = document.querySelector(`.oa-sl-order-item[data-orderid="${orderId}"]`);
+  if (!item) return;
+
+  const order = state.slOrders.find(o => o.orderid === orderId);
+  if (!order) return;
+
+  const orderLotSize = getCachedLotSizeForOrder(order);
+  const qty = parseInt(order.quantity) || 0;
+  const displayLots = orderLotSize > 0 ? Math.floor(qty / orderLotSize) : qty;
+
+  item.innerHTML = `
+    <div style="width:100%;padding:4px 0;">
+      <div style="display:flex;gap:8px;margin-bottom:8px;">
+        <div style="width:55px;">
+          <label style="font-size:8px;color:#888;display:block;margin-bottom:2px;">Lots</label>
+          <input type="number" id="sl-edit-lots-${orderId}" value="${displayLots}" class="oa-small-input" style="width:100%;padding:6px;">
+        </div>
+        <div style="width:75px;">
+          <label style="font-size:8px;color:#888;display:block;margin-bottom:2px;">Trigger</label>
+          <input type="number" id="sl-edit-trg-${orderId}" value="${order.trigger_price || 0}" step="0.1" class="oa-small-input" style="width:100%;padding:6px;">
+        </div>
+        <div style="width:75px;">
+          <label style="font-size:8px;color:#888;display:block;margin-bottom:2px;">Price</label>
+          <input type="number" id="sl-edit-price-${orderId}" value="${order.price}" step="0.1" class="oa-small-input" style="width:100%;padding:6px;">
+        </div>
+      </div>
+      <div style="display:flex;gap:6px;justify-content:flex-end;">
+        <button class="oa-btn success" id="sl-save-${orderId}" style="padding:4px 12px;font-size:9px;">Save</button>
+        <button class="oa-btn" id="sl-cancel-${orderId}" style="padding:4px 12px;font-size:9px;background:#333;color:#ccc;">Cancel</button>
+      </div>
+    </div>
+  `;
+
+  document.getElementById(`sl-save-${orderId}`)?.addEventListener('click', () => saveSLOrder(orderId));
+  document.getElementById(`sl-cancel-${orderId}`)?.addEventListener('click', () => renderSLPanel());
+}
+
+async function saveSLOrder(orderId) {
+  const order = state.slOrders.find(o => o.orderid === orderId);
+  if (!order) return;
+
+  const lotsInput = document.getElementById(`sl-edit-lots-${orderId}`);
+  const trgInput = document.getElementById(`sl-edit-trg-${orderId}`);
+  const priceInput = document.getElementById(`sl-edit-price-${orderId}`);
+
+  const orderLotSize = getCachedLotSizeForOrder(order);
+  const lotsValue = lotsInput ? parseInt(lotsInput.value) || 1 : 1;
+  const newQty = lotsValue * orderLotSize;
+  const newTrg = trgInput ? trgInput.value : (order.trigger_price || 0);
+  const newPrice = priceInput ? priceInput.value : order.price;
+
+  const btn = document.getElementById(`sl-save-${orderId}`);
+  if (btn) { btn.textContent = '...'; btn.disabled = true; }
+
+  const data = {
+    strategy: order.strategy || 'Chrome',
+    symbol: order.symbol,
+    exchange: order.exchange,
+    action: order.action,
+    product: order.product,
+    pricetype: order.pricetype,
+    orderid: order.orderid,
+    quantity: String(newQty),
+    price: String(newPrice),
+    trigger_price: String(newTrg),
+    disclosed_quantity: "0"
+  };
+
+  const result = await apiCall('/api/v1/modifyorder', data);
+
+  if (result.status === 'success') {
+    showNotification(`SL order modified`, 'success');
+    fetchSLOrdersForPosition().then(() => renderSLPanel());
+  } else {
+    showNotification(`Modify failed: ${result.message || 'Unknown'}`, 'error');
+    if (btn) { btn.textContent = 'Save'; btn.disabled = false; }
+  }
+}
+
+async function exitAtMarket() {
+  // Get selected orders or all orders
+  const checkboxes = document.querySelectorAll('.oa-sl-checkbox:checked');
+  const orderIds = checkboxes.length > 0
+    ? Array.from(checkboxes).map(cb => cb.dataset.orderid)
+    : state.slOrders.map(o => o.orderid);
+
+  if (orderIds.length === 0) {
+    showNotification('No SL orders to execute', 'info');
+    return;
+  }
+
+  const btn = document.getElementById('oa-sl-exit-market');
+  if (btn) { btn.textContent = 'Executing...'; btn.disabled = true; }
+
+  let successCount = 0;
+  for (const orderId of orderIds) {
+    const order = state.slOrders.find(o => o.orderid === orderId);
+    if (!order) continue;
+
+    // Modify order to MARKET type for immediate execution
+    const result = await apiCall('/api/v1/modifyorder', {
+      strategy: order.strategy || 'Chrome',
+      symbol: order.symbol,
+      exchange: order.exchange,
+      action: order.action,
+      product: order.product,
+      pricetype: 'MARKET',
+      orderid: order.orderid,
+      quantity: String(order.quantity),
+      price: '0',
+      trigger_price: '0',
+      disclosed_quantity: '0'
+    });
+
+    if (result.status === 'success') successCount++;
+  }
+
+  showNotification(`${successCount}/${orderIds.length} orders executed at market`,
+    successCount > 0 ? 'success' : 'error');
+
+  if (btn) { btn.textContent = 'Exit at Market'; btn.disabled = false; }
+
+  // Refresh SL orders and position
+  fetchSLOrdersForPosition().then(() => renderSLPanel());
+  fetchOpenPosition();
+}
+
+async function cancelAllSLOrders() {
+  // Get selected orders or all orders
+  const checkboxes = document.querySelectorAll('.oa-sl-checkbox:checked');
+  const orderIds = checkboxes.length > 0
+    ? Array.from(checkboxes).map(cb => cb.dataset.orderid)
+    : state.slOrders.map(o => o.orderid);
+
+  if (orderIds.length === 0) {
+    showNotification('No SL orders to cancel', 'info');
+    return;
+  }
+
+  const btn = document.getElementById('oa-sl-cancel-all');
+  if (btn) { btn.textContent = 'Cancelling...'; btn.disabled = true; }
+
+  let successCount = 0;
+  for (const orderId of orderIds) {
+    const order = state.slOrders.find(o => o.orderid === orderId);
+    const result = await apiCall('/api/v1/cancelorder', {
+      strategy: order?.strategy || 'Chrome',
+      orderid: orderId
+    });
+
+    if (result.status === 'success') successCount++;
+  }
+
+  showNotification(`${successCount}/${orderIds.length} SL orders cancelled`,
+    successCount > 0 ? 'success' : 'error');
+
+  if (btn) { btn.textContent = 'Cancel All'; btn.disabled = false; }
+
+  // Refresh SL orders
+  fetchSLOrdersForPosition().then(() => {
+    renderSLPanel();
+    updateSLButton();
+  });
+}
+
+async function addSLOrder() {
+  const symbol = getActiveSymbol();
+  if (!symbol || !state.selectedSymbol) {
+    showNotification('No symbol selected', 'error');
+    return;
+  }
+
+  const netposEl = document.getElementById('oa-netpos');
+  const currentQty = netposEl ? parseInt(netposEl.dataset.qty || '0') : 0;
+
+  if (currentQty === 0) {
+    showNotification('No open position', 'error');
+    return;
+  }
+
+  // Get lots from the uncovered input (user can edit it, use absolute value)
+  const lotsInput = document.getElementById('oa-sl-remaining-lots');
+  const lots = lotsInput ? Math.abs(parseInt(lotsInput.value) || 0) : 0;
+
+  if (lots <= 0) {
+    showNotification('Enter lots quantity', 'error');
+    return;
+  }
+
+  // Determine action: opposite of position
+  const slAction = currentQty > 0 ? 'SELL' : 'BUY';
+  const actionClass = slAction === 'BUY' ? 'buy' : 'sell';
+
+  // Use current option LTP as both trigger price and limit price
+  const triggerPrice = state.optionLtp || 0;
+  const limitPrice = state.optionLtp || 0;
+
+  // Show edit form in the SL list (prepend a new order item)
+  const list = document.getElementById('oa-sl-list');
+  if (!list) return;
+
+  // Create a new order form at the top of the list
+  const newOrderId = 'new-sl-' + Date.now();
+  const newOrderHtml = `
+    <div class="oa-sl-order-item oa-sl-new-order" data-orderid="${newOrderId}">
+      <div style="width:100%;padding:4px 0;">
+        <div style="margin-bottom:6px;">
+          <span class="oa-sl-action-tag ${actionClass}">${slAction}</span>
+          <span style="font-size:10px;color:#ff6b35;font-weight:600;">New SL Order</span>
+        </div>
+        <div style="display:flex;gap:8px;margin-bottom:8px;">
+          <div style="width:55px;">
+            <label style="font-size:8px;color:#888;display:block;margin-bottom:2px;">Lots</label>
+            <input type="number" id="sl-new-lots-${newOrderId}" value="${lots}" class="oa-small-input" style="width:100%;padding:6px;">
+          </div>
+          <div style="width:75px;">
+            <label style="font-size:8px;color:#888;display:block;margin-bottom:2px;">Trigger</label>
+            <input type="number" id="sl-new-trg-${newOrderId}" value="${triggerPrice}" step="0.1" class="oa-small-input" style="width:100%;padding:6px;">
+          </div>
+          <div style="width:75px;">
+            <label style="font-size:8px;color:#888;display:block;margin-bottom:2px;">Price</label>
+            <input type="number" id="sl-new-price-${newOrderId}" value="${limitPrice}" step="0.1" class="oa-small-input" style="width:100%;padding:6px;">
+          </div>
+        </div>
+        <div style="display:flex;gap:6px;justify-content:flex-end;">
+          <button class="oa-btn success" id="sl-place-${newOrderId}" style="padding:4px 12px;font-size:9px;">Place SL</button>
+          <button class="oa-btn" id="sl-cancel-new-${newOrderId}" style="padding:4px 12px;font-size:9px;background:#333;color:#ccc;">Cancel</button>
+        </div>
+      </div>
+    </div>
+  `;
+
+  // Insert at the top of the list
+  list.insertAdjacentHTML('afterbegin', newOrderHtml);
+
+  // Add event listeners
+  document.getElementById(`sl-place-${newOrderId}`)?.addEventListener('click', () => placeNewSLOrder(newOrderId, slAction));
+  document.getElementById(`sl-cancel-new-${newOrderId}`)?.addEventListener('click', () => {
+    const newItem = document.querySelector(`.oa-sl-new-order[data-orderid="${newOrderId}"]`);
+    if (newItem) newItem.remove();
+  });
+}
+
+async function placeNewSLOrder(newOrderId, slAction) {
+  const symbol = getActiveSymbol();
+  if (!symbol || !state.selectedSymbol) {
+    showNotification('No symbol selected', 'error');
+    return;
+  }
+
+  const lotsInput = document.getElementById(`sl-new-lots-${newOrderId}`);
+  const trgInput = document.getElementById(`sl-new-trg-${newOrderId}`);
+  const priceInput = document.getElementById(`sl-new-price-${newOrderId}`);
+
+  const lots = lotsInput ? Math.abs(parseInt(lotsInput.value) || 0) : 0;
+  const triggerPrice = trgInput ? parseFloat(trgInput.value) || 0 : 0;
+  const limitPrice = priceInput ? parseFloat(priceInput.value) || 0 : 0;
+
+  if (lots <= 0) {
+    showNotification('Enter lots quantity', 'error');
+    return;
+  }
+
+  if (triggerPrice <= 0) {
+    showNotification('Enter trigger price', 'error');
+    return;
+  }
+
+  const quantity = lots * (state.lotSize || 1);
+
+  const btn = document.getElementById(`sl-place-${newOrderId}`);
+  if (btn) { btn.textContent = 'Placing...'; btn.disabled = true; }
+
+  const result = await apiCall('/api/v1/placeorder', {
+    strategy: 'Chrome',
+    symbol: state.selectedSymbol,
+    exchange: symbol.optionExchange,
+    action: slAction,
+    product: symbol.productType,
+    pricetype: 'SL',
+    quantity: String(quantity),
+    price: String(limitPrice),
+    trigger_price: String(triggerPrice),
+    disclosed_quantity: '0'
+  });
+
+  if (result.status === 'success') {
+    showNotification(`SL order placed! ID: ${result.orderid || ''}`, 'success');
+    // Refresh SL orders
+    fetchSLOrdersForPosition().then(() => renderSLPanel());
+  } else {
+    showNotification(`SL order failed: ${result.message || 'Unknown'}`, 'error');
+    if (btn) { btn.textContent = 'Place SL'; btn.disabled = false; }
   }
 }
 
@@ -1284,6 +1752,7 @@ function updateStrikeDropdown() {
       updateSelectedOptionLTP();
       updateStrikeButton();
       toggleStrikeDropdown(false);
+      toggleSLPanel(false); // Close SL panel when strike changes
       // Immediately update dropdown HTML so it shows correct selection when opened again
       updateStrikeDropdown();
       // Fetch net position for the selected strike
@@ -1410,6 +1879,7 @@ function buildScalpingUI() {
         <button id="oa-netpos-update" class="oa-input-update" title="Refresh position">↻</button>
       </div>
       <button id="oa-resize-btn" class="oa-resize-btn neutral" title="Resize position">Resize</button>
+      <button id="oa-sl-btn" class="oa-sl-btn neutral" disabled title="Manage Stop Loss">SL</button>
     </div>
     <div id="oa-strike-dropdown" class="oa-strike-dropdown hidden">
       <div class="oa-expiry-container">
@@ -1467,6 +1937,28 @@ function buildScalpingUI() {
           <button id="oa-close-all-btn" class="oa-footer-btn">Close All Positions</button>
           <span id="oa-positions-stats" class="oa-footer-stats"></span>
           <span id="oa-positions-pnl" class="oa-footer-pnl"></span>
+        </div>
+      </div>
+    </div>
+    <div id="oa-sl-panel" class="oa-sl-panel hidden">
+      <div class="oa-sl-header">
+        <span>Stop Loss Orders</span>
+        <span id="oa-sl-position-info" class="oa-sl-position-info">--</span>
+      </div>
+      <div id="oa-sl-list" class="oa-orders-list"></div>
+      <div class="oa-sl-footer">
+        <div class="oa-sl-footer-row">
+          <div class="oa-sl-remaining">
+            <button id="oa-sl-refresh" class="oa-sl-refresh-btn" title="Refresh position and SL orders">↻</button>
+            <span>Uncovered:</span>
+            <input id="oa-sl-remaining-lots" type="text" class="oa-sl-input" value="0">
+            <span>lots</span>
+            <button id="oa-sl-add-btn" class="oa-sl-add-btn" title="Add SL Order">+ Add SL</button>
+          </div>
+          <div class="oa-sl-actions">
+            <button id="oa-sl-exit-market" class="oa-footer-btn danger small">Exit Mkt</button>
+            <button id="oa-sl-cancel-all" class="oa-footer-btn small">Cancel All</button>
+          </div>
         </div>
       </div>
     </div>
@@ -1816,6 +2308,39 @@ function setupScalpingEvents(container) {
     }
     // Quantity is valid, place resize
     placeResize();
+  });
+
+  // SL button
+  container.querySelector('#oa-sl-btn')?.addEventListener('click', () => {
+    toggleSLPanel();
+  });
+
+  // SL Exit at Market
+  container.querySelector('#oa-sl-exit-market')?.addEventListener('click', () => {
+    exitAtMarket();
+  });
+
+  // SL Cancel All
+  container.querySelector('#oa-sl-cancel-all')?.addEventListener('click', () => {
+    cancelAllSLOrders();
+  });
+
+  // SL Add Order
+  container.querySelector('#oa-sl-add-btn')?.addEventListener('click', () => {
+    addSLOrder();
+  });
+
+  // SL Panel Refresh
+  container.querySelector('#oa-sl-refresh')?.addEventListener('click', async () => {
+    const btn = document.getElementById('oa-sl-refresh');
+    if (btn) btn.classList.add('spinning');
+
+    // Fetch position and SL orders
+    await _fetchOpenPosition();
+    // Note: _fetchOpenPosition already calls fetchSLOrdersForPosition
+    renderSLPanel();
+
+    if (btn) btn.classList.remove('spinning');
   });
 
   // Order button
@@ -2508,6 +3033,10 @@ function injectStyles() {
     .oa-icon-btn:hover { color: #fff; }
     .oa-light-theme .oa-icon-btn { color: #999 !important; }
     .oa-light-theme .oa-icon-btn:hover { color: #333 !important; }
+    .oa-header-btn { background: transparent !important; color: #ccc !important; border: 1px solid #444 !important; border-radius: 4px !important; padding: 3px 8px !important; font-size: 10px !important; font-weight: 600 !important; cursor: pointer !important; }
+    .oa-header-btn:hover { border-color: #888 !important; color: #fff !important; }
+    .oa-light-theme .oa-header-btn { color: #333 !important; border-color: #ccc !important; background: #f5f5f5 !important; }
+    .oa-light-theme .oa-header-btn:hover { border-color: #666 !important; color: #000 !important; }
     
     /* Controls row */
     .oa-controls { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
@@ -2577,6 +3106,52 @@ function injectStyles() {
     .oa-light-theme .oa-resize-btn { background: #f0f0f0 !important; color: #222 !important; border-color: #ccc !important; }
     .oa-light-theme .oa-resize-btn.buy { color: #000 !important; }
     .oa-light-theme .oa-resize-btn.sell { color: #fff !important; }
+    
+    /* SL Button */
+    .oa-sl-btn { padding: 6px 10px !important; border: none !important; border-radius: 6px !important; font-weight: 700 !important; cursor: pointer !important; font-size: 10px !important; white-space: nowrap !important; background: linear-gradient(180deg, #ff6b35 0%, #e55039 100%) !important; color: white !important; height: auto !important; width: auto !important; transition: all 0.2s !important; }
+    .oa-sl-btn.neutral { background: #4a4a5a !important; color: #888 !important; }
+    .oa-sl-btn:disabled { opacity: 0.5 !important; cursor: not-allowed !important; }
+    .oa-sl-btn:not(:disabled):hover { transform: translateY(-1px) !important; box-shadow: 0 2px 8px rgba(255, 107, 53, 0.4) !important; }
+    .oa-sl-btn.has-orders { animation: slPulse 2s infinite !important; }
+    @keyframes slPulse { 0%, 100% { box-shadow: 0 0 0 0 rgba(255, 107, 53, 0.4); } 50% { box-shadow: 0 0 0 4px rgba(255, 107, 53, 0); } }
+    .oa-light-theme .oa-sl-btn { background: linear-gradient(180deg, #ff6b35 0%, #e55039 100%) !important; }
+    .oa-light-theme .oa-sl-btn.neutral { background: #ddd !important; color: #888 !important; }
+    
+    /* SL Panel */
+    .oa-sl-panel { position: absolute !important; top: 100% !important; right: 0 !important; width: 340px !important; max-height: 350px !important; background: #1e1e2e !important; border-radius: 12px !important; box-shadow: 0 8px 32px rgba(0,0,0,0.4) !important; overflow: hidden !important; z-index: 1002 !important; margin-top: 8px !important; }
+    .oa-sl-panel.hidden { display: none !important; }
+    .oa-sl-header { display: flex !important; justify-content: space-between !important; align-items: center !important; padding: 10px 12px !important; background: rgba(255,107,53,0.1) !important; border-bottom: 1px solid rgba(255,107,53,0.2) !important; font-size: 11px !important; font-weight: 600 !important; color: #ff6b35 !important; }
+    .oa-sl-position-info { font-size: 10px !important; color: #888 !important; }
+    .oa-sl-footer { padding: 8px 10px !important; background: rgba(0,0,0,0.2) !important; border-top: 1px solid rgba(255,255,255,0.05) !important; }
+    .oa-sl-footer-row { display: flex !important; align-items: center !important; justify-content: space-between !important; gap: 8px !important; }
+    .oa-sl-remaining { display: flex !important; align-items: center !important; gap: 4px !important; font-size: 10px !important; color: #ccc !important; }
+    .oa-sl-input { width: 40px !important; padding: 4px 4px !important; background: rgba(255,255,255,0.1) !important; border: 1px solid rgba(255,255,255,0.2) !important; border-radius: 4px !important; color: #fff !important; font-size: 10px !important; text-align: center !important; }
+    .oa-sl-add-btn { padding: 4px 8px !important; font-size: 9px !important; font-weight: 600 !important; background: linear-gradient(180deg, #00c853 0%, #00a843 100%) !important; color: white !important; border: none !important; border-radius: 4px !important; cursor: pointer !important; white-space: nowrap !important; }
+    .oa-sl-add-btn:hover { background: linear-gradient(180deg, #00a843 0%, #008833 100%) !important; }
+    .oa-sl-refresh-btn { padding: 2px 6px !important; font-size: 12px !important; background: transparent !important; color: #888 !important; border: 1px solid rgba(255,255,255,0.2) !important; border-radius: 4px !important; cursor: pointer !important; transition: all 0.2s !important; }
+    .oa-sl-refresh-btn:hover { color: #ff6b35 !important; border-color: #ff6b35 !important; }
+    .oa-sl-refresh-btn.spinning { animation: spin 0.8s linear infinite !important; }
+    @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+    .oa-sl-actions { display: flex !important; gap: 6px !important; }
+    .oa-footer-btn.small { padding: 4px 8px !important; font-size: 9px !important; }
+    .oa-footer-btn.danger { background: #e55039 !important; color: white !important; }
+    .oa-footer-btn.danger:hover { background: #c0392b !important; }
+    .oa-sl-order-item { padding: 8px 10px !important; border-bottom: 1px solid rgba(255,255,255,0.05) !important; display: flex !important; justify-content: space-between !important; align-items: center !important; }
+    .oa-sl-order-item:hover { background: rgba(255,255,255,0.03) !important; }
+    .oa-sl-order-info { font-size: 10px !important; flex: 1 !important; }
+    .oa-sl-order-details { color: #888 !important; font-size: 9px !important; }
+    .oa-sl-checkbox { margin-right: 8px !important; }
+    .oa-sl-action-tag { display: inline-block !important; padding: 1px 4px !important; border-radius: 3px !important; font-size: 8px !important; font-weight: 700 !important; margin-right: 4px !important; }
+    .oa-sl-action-tag.buy { background: rgba(0,200,83,0.2) !important; color: #00c853 !important; }
+    .oa-sl-action-tag.sell { background: rgba(255,23,68,0.2) !important; color: #ff1744 !important; }
+    .oa-light-theme .oa-sl-panel { background: #fff !important; box-shadow: 0 8px 32px rgba(0,0,0,0.15) !important; }
+    .oa-light-theme .oa-sl-header { background: rgba(255,107,53,0.1) !important; }
+    .oa-light-theme .oa-sl-footer { background: #f5f5f5 !important; border-top: 1px solid #eee !important; }
+    .oa-light-theme .oa-sl-remaining { color: #333 !important; }
+    .oa-light-theme .oa-sl-input { background: #fff !important; border: 1px solid #ddd !important; color: #333 !important; }
+    .oa-light-theme .oa-sl-order-item { border-bottom-color: #eee !important; }
+    .oa-light-theme .oa-sl-order-item:hover { background: #f9f9f9 !important; }
+    .oa-light-theme .oa-sl-add-btn { background: linear-gradient(180deg, #00c853 0%, #00a843 100%) !important; }
     
     /* Strike dropdown - left aligned */
     .oa-strike-dropdown { position: absolute; top: 100%; left: 0; background: #000; border: 1px solid #222; border-radius: 6px; margin-top: 4px; max-height: 280px; overflow: hidden; z-index: 100; width: 240px; }
@@ -2679,6 +3254,10 @@ function injectStyles() {
     .oa-orders-dropdown.hidden { display: none !important; }
     .oa-orders-header { display: flex !important; align-items: center !important; justify-content: space-between !important; padding: 8px !important; border-bottom: 1px solid #222 !important; background: #111 !important; border-radius: 6px 6px 0 0 !important; }
     .oa-orders-title { font-size: 11px !important; font-weight: 700 !important; color: #fff !important; }
+    .oa-tab-menu { display: flex !important; gap: 4px !important; }
+    .oa-tab-btn { background: transparent !important; border: none !important; color: #888 !important; font-size: 10px !important; font-weight: 600 !important; cursor: pointer !important; padding: 4px 8px !important; border-radius: 4px !important; white-space: nowrap !important; }
+    .oa-tab-btn:hover { color: #fff !important; background: rgba(255,255,255,0.1) !important; }
+    .oa-tab-btn.active { background: #333 !important; color: #fff !important; }
     .oa-orders-filters { display: flex !important; gap: 4px !important; padding: 6px 8px !important; border-bottom: 1px solid #222 !important; }
     .oa-filter-btn { background: transparent !important; border: none !important; color: #666 !important; font-size: 10px !important; cursor: pointer !important; padding: 2px 6px !important; border-radius: 3px !important; }
     .oa-filter-btn.active { background: #333 !important; color: #fff !important; }
@@ -3060,30 +3639,30 @@ function enterEditMode(orderId) {
   const orderLotSize = getCachedLotSizeForOrder(order);
   // Convert qty to lots for display using order-specific lot size
   const qty = parseInt(order.quantity) || 0;
-  const displayLots = orderLotSize > 0 ? Math.floor(qty / orderLotSize) : qty;
+  const displayLots = orderLotSize > 0 ? Math.floor(Math.abs(qty) / orderLotSize) : Math.abs(qty);
 
   item.innerHTML = `
     <div class="oa-order-row-top" style="margin-bottom: 8px;">
       <span class="oa-order-symbol">${order.symbol} <span style="font-size:9px;color:#666;">Editing...</span></span>
     </div>
-    <div style="display:flex;gap:4px;margin-bottom:6px;">
-      <div style="flex:1;">
-        <label style="font-size:8px;color:#666;display:block;">Lots</label>
-        <input type="number" id="edit-lots-${orderId}" value="${displayLots}" class="oa-small-input" style="width:100%;">
+    <div style="display:flex;gap:8px;margin-bottom:6px;">
+      <div style="width:55px;">
+        <label style="font-size:8px;color:#888;display:block;margin-bottom:2px;">Lots</label>
+        <input type="number" id="edit-lots-${orderId}" value="${displayLots}" min="1" class="oa-small-input" style="width:100%;padding:6px;">
       </div>
       ${isTrigger ? `
-      <div style="flex:1;">
-        <label style="font-size:8px;color:#666;display:block;">Trg Prc</label>
-        <input type="number" id="edit-trg-${orderId}" value="${order.trigger_price || 0}" class="oa-small-input" style="width:100%;">
+      <div style="width:75px;">
+        <label style="font-size:8px;color:#888;display:block;margin-bottom:2px;">Trigger</label>
+        <input type="number" id="edit-trg-${orderId}" value="${order.trigger_price || 0}" step="0.1" class="oa-small-input" style="width:100%;padding:6px;">
       </div>` : ''}
-      <div style="flex:1;">
-        <label style="font-size:8px;color:#666;display:block;">Price</label>
-        <input type="number" id="edit-price-${orderId}" value="${order.price}" class="oa-small-input" style="width:100%;">
+      <div style="width:75px;">
+        <label style="font-size:8px;color:#888;display:block;margin-bottom:2px;">Price</label>
+        <input type="number" id="edit-price-${orderId}" value="${order.price}" step="0.1" class="oa-small-input" style="width:100%;padding:6px;">
       </div>
     </div>
-    <div style="display:flex;gap:4px;justify-content:flex-end;">
-      <button class="oa-btn success" id="save-edit-${orderId}" style="padding:2px 8px;font-size:9px;">Save</button>
-      <button class="oa-btn" id="cancel-edit-${orderId}" style="padding:2px 8px;font-size:9px;background:#333;color:#ccc;">Cancel</button>
+    <div style="display:flex;gap:6px;justify-content:flex-end;">
+      <button class="oa-btn success" id="save-edit-${orderId}" style="padding:4px 12px;font-size:9px;">Save</button>
+      <button class="oa-btn" id="cancel-edit-${orderId}" style="padding:4px 12px;font-size:9px;background:#333;color:#ccc;">Cancel</button>
     </div>
   `;
 
