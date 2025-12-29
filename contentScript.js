@@ -1778,6 +1778,7 @@ function updatePriceDisplay(forceUpdate = false) {
 
   if (state.orderType === 'MARKET' || forceUpdate) {
     el.value = state.optionLtp.toFixed(2);
+    state.price = state.optionLtp; // Sync state.price to prevent stale values
   }
 
   if (state.orderType === 'MARKET') {
@@ -2168,7 +2169,7 @@ function setupScalpingEvents(container) {
     const idx = orderTypes.indexOf(state.orderType);
     state.orderType = orderTypes[(idx + 1) % orderTypes.length];
     e.target.textContent = state.orderType;
-    updatePriceDisplay();
+    updatePriceDisplay(true);
     fetchMargin(); // Auto-fetch margin when order type changes
     updateWsSubscriptions(); // Update WebSocket subscriptions based on new mode
   });
@@ -2470,6 +2471,12 @@ function toggleRefreshPanel() {
   if (!panel) return;
   const isHidden = panel.classList.contains('hidden');
   if (isHidden) {
+    // Hide other panels directly
+    const ordersDropdown = document.getElementById('oa-orders-dropdown');
+    if (ordersDropdown) ordersDropdown.classList.add('hidden');
+    const settingsPanel = document.getElementById('oa-settings-panel');
+    if (settingsPanel) settingsPanel.classList.add('hidden');
+
     panel.innerHTML = buildRefreshPanel();
     setupRefreshEvents(panel);
   }
@@ -2713,6 +2720,12 @@ function toggleSettingsPanel() {
   if (!panel) return;
   const isHidden = panel.classList.contains('hidden');
   if (isHidden) {
+    // Hide other panels directly
+    const ordersDropdown = document.getElementById('oa-orders-dropdown');
+    if (ordersDropdown) ordersDropdown.classList.add('hidden');
+    const refreshPanel = document.getElementById('oa-refresh-panel');
+    if (refreshPanel) refreshPanel.classList.add('hidden');
+
     panel.innerHTML = buildSettingsPanel();
     setupSettingsEvents(panel);
   }
@@ -3338,10 +3351,11 @@ function toggleOrdersDropdown(show) {
   btn?.classList.toggle('active', isShow);
 
   if (isShow) {
-    // Hide other panels
-    toggleSettingsPanel(); // This toggles it, so if open it closes. logic check needed.
+    // Hide other panels directly without calling their toggle functions
     const settingsPanel = document.getElementById('oa-settings-panel');
-    if (settingsPanel && !settingsPanel.classList.contains('hidden')) settingsPanel.classList.add('hidden');
+    if (settingsPanel) settingsPanel.classList.add('hidden');
+    const refreshPanel = document.getElementById('oa-refresh-panel');
+    if (refreshPanel) refreshPanel.classList.add('hidden');
 
     // Refresh orders when opening
     fetchOrders();
@@ -3537,7 +3551,7 @@ function renderOrders() {
 
   // Filter orders
   const filtered = state.orders.filter(o => {
-    const s = o.order_status ? o.order_status.toLowerCase() : '';
+    const s = o.order_status ? o.order_status.toLowerCase().replace(/_/g, ' ') : '';
     if (state.ordersFilter === 'open') {
       return ['open', 'trigger pending', 'validation pending', 'put order req received'].includes(s);
     } else if (state.ordersFilter === 'completed') {
