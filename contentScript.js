@@ -57,6 +57,8 @@ let settings = {};
 let ws = null;
 let wsSubscriptions = { underlying: null, strike: null };
 let wsReconnectTimer = null;
+let wsReconnectAttempts = 0; // Track reconnection attempts for exponential backoff
+const WS_MAX_RECONNECT_ATTEMPTS = 5;
 let refreshInterval = null;
 
 // Lot size cache - keyed by "underlying:expiry" (e.g., "NIFTY:26DEC24")
@@ -292,6 +294,7 @@ function wsConnect() {
 
     ws.onopen = () => {
       console.log('WebSocket: Connected');
+      wsReconnectAttempts = 0; // Reset attempts on successful connection
       // Authenticate
       ws.send(JSON.stringify({ action: 'authenticate', api_key: settings.apiKey }));
     };
@@ -308,10 +311,27 @@ function wsConnect() {
     ws.onclose = () => {
       console.log('WebSocket: Disconnected');
       ws = null;
-      // Auto-reconnect if still enabled
+      // Auto-reconnect with exponential backoff if still enabled
       if (state.liveDataEnabled) {
-        clearTimeout(wsReconnectTimer);
-        wsReconnectTimer = setTimeout(() => wsConnect(), 5000);
+        wsReconnectAttempts++;
+        if (wsReconnectAttempts <= WS_MAX_RECONNECT_ATTEMPTS) {
+          const delay = Math.min(1000 * Math.pow(2, wsReconnectAttempts - 1), 30000); // 1s, 2s, 4s, 8s, 16s (capped at 30s)
+          console.log(`WebSocket: Reconnecting in ${delay / 1000}s (attempt ${wsReconnectAttempts}/${WS_MAX_RECONNECT_ATTEMPTS})`);
+          clearTimeout(wsReconnectTimer);
+          wsReconnectTimer = setTimeout(() => wsConnect(), delay);
+        } else {
+          // Max retries exhausted, disable live mode
+          console.log('WebSocket: Max reconnection attempts reached, disabling live mode');
+          state.liveDataEnabled = false;
+          wsReconnectAttempts = 0;
+          showNotification('Live data disconnected. Enable again to retry.', 'error', 3000);
+          // Update UI to reflect disabled state
+          const liveBtn = document.getElementById('oa-live-btn');
+          if (liveBtn) {
+            liveBtn.textContent = '○ Live';
+            liveBtn.className = 'oa-btn';
+          }
+        }
       }
     };
 
@@ -561,7 +581,7 @@ async function _fetchOpenPosition() {
 
   if (result.status === 'success') {
     // Convert qty to lots for display
-    const quantity = parseInt(result.quantity) || 0;
+    const quantity = parseInt(result.quantity, 10) || 0;
     updateNetPosDisplay(quantity);
 
     // Reset netpos input editing state on successful API fetch
@@ -660,8 +680,8 @@ async function fetchStrikeChain() {
     const atmStrikeMatch = atmResult.symbol.match(/^[A-Z]+(?:\d{2}[A-Z]{3}\d{2})(\d+)(?=CE$|PE$)/);
     const itm1StrikeMatch = itm1Result.symbol.match(/^[A-Z]+(?:\d{2}[A-Z]{3}\d{2})(\d+)(?=CE$|PE$)/);
 
-    const atmStrike = atmStrikeMatch ? parseInt(atmStrikeMatch[1]) : 0;
-    const itm1Strike = itm1StrikeMatch ? parseInt(itm1StrikeMatch[1]) : 0;
+    const atmStrike = atmStrikeMatch ? parseInt(atmStrikeMatch[1], 10) : 0;
+    const itm1Strike = itm1StrikeMatch ? parseInt(itm1StrikeMatch[1], 10) : 0;
 
     // Calculate strike interval (absolute difference - just the gap between strikes)
     strikeInterval = Math.abs(atmStrike - itm1Strike);
@@ -771,7 +791,7 @@ async function switchOptionType() {
   strikeChain = newChain.sort((a, b) => {
     const getOrder = (offset) => {
       if (offset === 'ATM') return 0;
-      const level = parseInt(offset.replace(/[A-Z]/g, ''));
+      const level = parseInt(offset.replace(/[A-Z]/g, ''), 10);
       return offset.startsWith('ITM') ? -level : level;
     };
     return getOrder(a.offset) - getOrder(b.offset);
@@ -987,7 +1007,7 @@ async function refreshSelectedStrike() {
 
     if (symbolResult.status === 'success') {
       const strikeMatch = symbolResult.symbol.match(/^[A-Z]+(?:\d{2}[A-Z]{3}\d{2})(\d+)(?=CE$|PE$)/);
-      const newStrike = strikeMatch ? parseInt(strikeMatch[1]) : 0;
+      const newStrike = strikeMatch ? parseInt(strikeMatch[1], 10) : 0;
 
       // If strike changed for the selected offset (e.g. ATM shifted), or lot size changed
       if ((newStrike !== state.selectedStrike && state.selectedStrike !== 0) || (symbolResult.lotsize && symbolResult.lotsize !== state.lotSize)) {
@@ -1076,7 +1096,7 @@ function updateNetPosDisplayMode() {
     // Only update if not editing (though API fetch usually resets editing state)
     if (el.dataset.editing === 'true') return;
 
-    const baseQty = parseInt(el.dataset.qty || el.value) || 0;
+    const baseQty = parseInt(el.dataset.qty || el.value, 10) || 0;
     // Always display in lots
     const displayValue = toLots(baseQty);
     el.value = displayValue.toString();
@@ -1139,7 +1159,7 @@ function updateSLButton() {
   if (!btn) return;
 
   const netposEl = document.getElementById('oa-netpos');
-  const currentQty = netposEl ? parseInt(netposEl.dataset.qty || '0') : 0;
+  const currentQty = netposEl ? parseInt(netposEl.dataset.qty || '0', 10) : 0;
 
   if (currentQty === 0) {
     // No open position - disable SL button and close panel if open
@@ -1163,7 +1183,7 @@ async function fetchSLOrdersForPosition() {
   }
 
   const netposEl = document.getElementById('oa-netpos');
-  const currentQty = netposEl ? parseInt(netposEl.dataset.qty || '0') : 0;
+  const currentQty = netposEl ? parseInt(netposEl.dataset.qty || '0', 10) : 0;
 
   if (currentQty === 0) {
     state.slOrders = [];
@@ -1236,7 +1256,7 @@ function renderSLPanel() {
   if (!list) return;
 
   const netposEl = document.getElementById('oa-netpos');
-  const currentQty = netposEl ? parseInt(netposEl.dataset.qty || '0') : 0;
+  const currentQty = netposEl ? parseInt(netposEl.dataset.qty || '0', 10) : 0;
   const currentLots = toLots(Math.abs(currentQty));
   const positionType = currentQty > 0 ? 'LONG' : currentQty < 0 ? 'SHORT' : 'FLAT';
 
@@ -1249,7 +1269,7 @@ function renderSLPanel() {
   let coveredLots = 0;
   state.slOrders.forEach(o => {
     const orderLotSize = getCachedLotSizeForOrder(o);
-    const qty = parseInt(o.quantity) || 0;
+    const qty = parseInt(o.quantity, 10) || 0;
     coveredLots += orderLotSize > 0 ? Math.floor(qty / orderLotSize) : qty;
   });
 
@@ -1269,7 +1289,7 @@ function renderSLPanel() {
 
   list.innerHTML = state.slOrders.map(o => {
     const orderLotSize = getCachedLotSizeForOrder(o);
-    const qty = parseInt(o.quantity) || 0;
+    const qty = parseInt(o.quantity, 10) || 0;
     const displayLots = orderLotSize > 0 ? Math.floor(qty / orderLotSize) : qty;
     const isBuy = o.action === 'BUY';
     const actionClass = isBuy ? 'buy' : 'sell';
@@ -1306,7 +1326,7 @@ function enterSLEditMode(orderId) {
   if (!order) return;
 
   const orderLotSize = getCachedLotSizeForOrder(order);
-  const qty = parseInt(order.quantity) || 0;
+  const qty = parseInt(order.quantity, 10) || 0;
   const displayLots = orderLotSize > 0 ? Math.floor(qty / orderLotSize) : qty;
 
   item.innerHTML = `
@@ -1345,7 +1365,7 @@ async function saveSLOrder(orderId) {
   const priceInput = document.getElementById(`sl-edit-price-${orderId}`);
 
   const orderLotSize = getCachedLotSizeForOrder(order);
-  const lotsValue = lotsInput ? parseInt(lotsInput.value) || 1 : 1;
+  const lotsValue = lotsInput ? parseInt(lotsInput.value, 10) || 1 : 1;
   const newQty = lotsValue * orderLotSize;
   const newTrg = trgInput ? trgInput.value : (order.trigger_price || 0);
   const newPrice = priceInput ? priceInput.value : order.price;
@@ -1472,7 +1492,7 @@ async function addSLOrder() {
   }
 
   const netposEl = document.getElementById('oa-netpos');
-  const currentQty = netposEl ? parseInt(netposEl.dataset.qty || '0') : 0;
+  const currentQty = netposEl ? parseInt(netposEl.dataset.qty || '0', 10) : 0;
 
   if (currentQty === 0) {
     showNotification('No open position', 'error');
@@ -1481,7 +1501,7 @@ async function addSLOrder() {
 
   // Get lots from the uncovered input (user can edit it, use absolute value)
   const lotsInput = document.getElementById('oa-sl-remaining-lots');
-  const lots = lotsInput ? Math.abs(parseInt(lotsInput.value) || 0) : 0;
+  const lots = lotsInput ? Math.abs(parseInt(lotsInput.value, 10) || 0) : 0;
 
   if (lots <= 0) {
     showNotification('Enter lots quantity', 'error');
@@ -1553,7 +1573,7 @@ async function placeNewSLOrder(newOrderId, slAction) {
   const trgInput = document.getElementById(`sl-new-trg-${newOrderId}`);
   const priceInput = document.getElementById(`sl-new-price-${newOrderId}`);
 
-  const lots = lotsInput ? Math.abs(parseInt(lotsInput.value) || 0) : 0;
+  const lots = lotsInput ? Math.abs(parseInt(lotsInput.value, 10) || 0) : 0;
   const triggerPrice = trgInput ? parseFloat(trgInput.value) || 0 : 0;
   const limitPrice = priceInput ? parseFloat(priceInput.value) || 0 : 0;
 
@@ -1747,7 +1767,7 @@ function updateStrikeDropdown() {
   list.querySelectorAll('.oa-strike-row').forEach(row => {
     row.addEventListener('click', () => {
       state.selectedOffset = row.dataset.offset;
-      state.selectedStrike = parseInt(row.dataset.strike);
+      state.selectedStrike = parseInt(row.dataset.strike, 10);
       state.selectedSymbol = row.dataset.symbol; // Save full symbol for API calls
       updateSelectedOptionLTP();
       updateStrikeButton();
@@ -2104,7 +2124,7 @@ function setupScalpingEvents(container) {
     if (e.target.readOnly) return;
     const symbol = getActiveSymbol();
     const minDisplay = symbol ? (symbol.quantityMode === 'lots' ? 1 : (state.lotSize || 1)) : 1;
-    const parsedValue = parseInt(e.target.value) || minDisplay;
+    const parsedValue = parseInt(e.target.value, 10) || minDisplay;
     setQuantityFromDisplay(parsedValue);
     updateResizeButton();
 
@@ -2142,7 +2162,7 @@ function setupScalpingEvents(container) {
 
     // Set the quantity first, then validate
     const minDisplay = symbol ? (symbol.quantityMode === 'lots' ? 1 : (state.lotSize || 1)) : 1;
-    const parsedValue = parseInt(e.target.value) || minDisplay;
+    const parsedValue = parseInt(e.target.value, 10) || minDisplay;
     setQuantityFromDisplay(parsedValue);
 
     // Validate quantity in quantity mode
@@ -2274,7 +2294,7 @@ function setupScalpingEvents(container) {
     clearTimeout(netposDebounceTimer);
     netposDebounceTimer = setTimeout(() => {
       // Update dataset.qty for resize button calculation
-      const displayValue = parseInt(e.target.value) || 0;
+      const displayValue = parseInt(e.target.value, 10) || 0;
       const qty = displayValue * (state.lotSize || 1);
       e.target.dataset.qty = qty.toString();
       updateResizeButton();
@@ -2537,7 +2557,7 @@ function setupRefreshEvents(panel) {
 
   panel.querySelector('#oa-refresh-save')?.addEventListener('click', async () => {
     state.refreshMode = panel.querySelector('#oa-refresh-mode').value;
-    state.refreshIntervalSec = parseInt(panel.querySelector('#oa-refresh-interval').value) || 5;
+    state.refreshIntervalSec = parseInt(panel.querySelector('#oa-refresh-interval').value, 10) || 5;
     state.refreshAreas = {
       funds: panel.querySelector('#oa-ref-funds').checked,
       underlying: panel.querySelector('#oa-ref-underlying').checked,
@@ -3592,7 +3612,7 @@ function renderOrders() {
     // Get lot size for this specific order from cache
     const orderLotSize = getCachedLotSizeForOrder(o);
     // Convert quantity to lots for display using order-specific lot size
-    const qty = parseInt(o.quantity) || 0;
+    const qty = parseInt(o.quantity, 10) || 0;
     const displayLots = orderLotSize > 0 ? Math.floor(qty / orderLotSize) : qty;
 
     // Extract time from timestamp using helper function
@@ -3652,7 +3672,7 @@ function enterEditMode(orderId) {
   // Get lot size for this specific order from cache
   const orderLotSize = getCachedLotSizeForOrder(order);
   // Convert qty to lots for display using order-specific lot size
-  const qty = parseInt(order.quantity) || 0;
+  const qty = parseInt(order.quantity, 10) || 0;
   const displayLots = orderLotSize > 0 ? Math.floor(Math.abs(qty) / orderLotSize) : Math.abs(qty);
 
   item.innerHTML = `
@@ -3695,7 +3715,7 @@ async function saveEditOrder(orderId) {
   // Get lot size for this specific order from cache
   const orderLotSize = getCachedLotSizeForOrder(order);
   // Convert lots to qty for API call using order-specific lot size
-  const lotsValue = lotsInput ? parseInt(lotsInput.value) || 1 : 1;
+  const lotsValue = lotsInput ? parseInt(lotsInput.value, 10) || 1 : 1;
   const newQty = lotsValue * orderLotSize;
   const newPrice = priceInput ? priceInput.value : order.price;
   const newTrg = trgInput ? trgInput.value : (order.trigger_price || 0);
@@ -3835,7 +3855,7 @@ function renderTradebook() {
   list.innerHTML = sorted.map(t => {
     const isBuy = t.action === 'BUY';
     const orderLotSize = getCachedLotSizeForOrder(t);
-    const qty = parseInt(t.quantity) || 0;
+    const qty = parseInt(t.quantity, 10) || 0;
     const displayLots = orderLotSize > 0 ? Math.floor(qty / orderLotSize) : qty;
 
     // Extract time from timestamp using helper function
@@ -3901,7 +3921,7 @@ function renderPositions() {
 
   // Filter positions based on state.positionsFilter (open/closed)
   const filtered = state.positions.filter(p => {
-    const qty = parseInt(p.quantity) || 0;
+    const qty = parseInt(p.quantity, 10) || 0;
     if (state.positionsFilter === 'open') return qty !== 0;
     if (state.positionsFilter === 'closed') return qty === 0;
     return true;
@@ -3914,7 +3934,7 @@ function renderPositions() {
   }
 
   list.innerHTML = filtered.map(p => {
-    const qty = parseInt(p.quantity) || 0;
+    const qty = parseInt(p.quantity, 10) || 0;
     const isOpen = qty !== 0;
     const isLong = qty > 0;
     const orderLotSize = getCachedLotSizeForOrder(p);
@@ -3994,7 +4014,7 @@ function enterPositionEditMode(item) {
   const symbol = item.dataset.symbol;
   const exchange = item.dataset.exchange;
   const product = item.dataset.product;
-  const qty = parseInt(item.dataset.qty) || 0;
+  const qty = parseInt(item.dataset.qty, 10) || 0;
 
   const position = state.positions.find(p => p.symbol === symbol && p.exchange === exchange);
   if (!position) return;
@@ -4187,7 +4207,7 @@ function setupPositionEditHandlers(item, editId, symbol, exchange, product, qty,
   // Calculate and update action button
   function updateActionButton() {
     // Target value is signed (negative for short position target)
-    const targetSignedLots = parseInt(lotsInput.value) || 0;
+    const targetSignedLots = parseInt(lotsInput.value, 10) || 0;
 
     // Current position in lots (signed)
     const currentSignedLots = isLong ? currentLots : (isShort ? -currentLots : 0);
@@ -4254,7 +4274,7 @@ function setupPositionEditHandlers(item, editId, symbol, exchange, product, qty,
   // Percentage button handlers
   pctContainer.querySelectorAll('.oa-pos-pct-btn').forEach(btn => {
     btn.addEventListener('click', () => {
-      const pct = parseInt(btn.dataset.pct);
+      const pct = parseInt(btn.dataset.pct, 10);
       if (pct) {
         applyPercentage(pct);
       }
@@ -4278,7 +4298,7 @@ function setupPositionEditHandlers(item, editId, symbol, exchange, product, qty,
     customInput.addEventListener('input', () => {
       clearTimeout(customPctDebounceTimer);
       customPctDebounceTimer = setTimeout(() => {
-        const pct = parseInt(customInput.value) || 0;
+        const pct = parseInt(customInput.value, 10) || 0;
         if (pct > 0) {
           applyPercentage(pct, false); // Don't close popup while typing
         }
@@ -4288,7 +4308,7 @@ function setupPositionEditHandlers(item, editId, symbol, exchange, product, qty,
     // Apply on Enter
     customInput.addEventListener('keypress', (e) => {
       if (e.key === 'Enter') {
-        const pct = parseInt(customInput.value) || 0;
+        const pct = parseInt(customInput.value, 10) || 0;
         if (pct > 0) {
           applyPercentage(pct, true);
           isCustomEditing = false;
@@ -4300,7 +4320,7 @@ function setupPositionEditHandlers(item, editId, symbol, exchange, product, qty,
 
     // Reset on blur
     customInput.addEventListener('blur', () => {
-      const pct = parseInt(customInput.value) || 0;
+      const pct = parseInt(customInput.value, 10) || 0;
       isCustomEditing = false;
       customBtn.classList.remove('editing');
       if (pct > 0) {
@@ -4342,7 +4362,7 @@ async function resizePosition(symbol, exchange, product, currentQty, lotSize, ed
   if (!lotsInput) return;
 
   // Target is now a signed value (negative for short position target)
-  const targetSignedLots = parseInt(lotsInput.value) || 0;
+  const targetSignedLots = parseInt(lotsInput.value, 10) || 0;
 
   // Calculate target quantity with proper sign
   const targetQty = targetSignedLots * lotSize;
@@ -4383,9 +4403,9 @@ function updatePositionsStats() {
   const pnlEl = document.getElementById('oa-positions-pnl');
   if (!statsEl) return;
 
-  const openPositions = state.positions.filter(p => parseInt(p.quantity) !== 0);
-  const longs = openPositions.filter(p => parseInt(p.quantity) > 0).length;
-  const shorts = openPositions.filter(p => parseInt(p.quantity) < 0).length;
+  const openPositions = state.positions.filter(p => parseInt(p.quantity, 10) !== 0);
+  const longs = openPositions.filter(p => parseInt(p.quantity, 10) > 0).length;
+  const shorts = openPositions.filter(p => parseInt(p.quantity, 10) < 0).length;
 
   statsEl.textContent = `Open: ${openPositions.length} (L${longs} S${shorts})`;
 
@@ -4430,7 +4450,7 @@ async function squareOffPosition(symbol, exchange, product) {
     return;
   }
 
-  const qty = parseInt(position.quantity) || 0;
+  const qty = parseInt(position.quantity, 10) || 0;
   if (qty === 0) {
     showNotification('Position already closed', 'info');
     return;
@@ -4454,9 +4474,8 @@ async function squareOffPosition(symbol, exchange, product) {
 
   if (result.status === 'success') {
     showNotification(`${symbol} position squared off`, 'success');
-    // Update local state to reflect closed position
-    if (position) position.quantity = 0;
-    renderPositions();
+    // Fetch fresh positions from API to ensure data consistency
+    fetchPositions();
   } else {
     showNotification(`Square off failed: ${result.message}`, 'error');
   }
