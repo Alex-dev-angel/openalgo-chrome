@@ -75,6 +75,8 @@ async function init() {
 
   isInitialized = true;
   settings = await loadSettings();
+  console.log('[OpenAlgo] Settings loaded:', { apiKey: settings.apiKey ? '***' : 'MISSING', hostUrl: settings.hostUrl, wsUrl: state.wsUrl, liveDataEnabled: state.liveDataEnabled });
+  
   injectStyles();
   injectUI();
   applyTheme(state.theme);
@@ -92,62 +94,126 @@ async function init() {
     strikeBtn?.classList.remove('oa-loading');
 
     // Auto-connect WebSocket if live data is enabled
-    if (state.liveDataEnabled && state.wsUrl) {
+    // Only connect if API key is present (required for authentication)
+    if (state.liveDataEnabled && state.wsUrl && settings.apiKey) {
+      console.log('[OpenAlgo] Initiating WebSocket connection to', state.wsUrl);
       wsConnect();
       // Wait for connection before subscribing
       setTimeout(() => updateWsSubscriptions(), 1500);
+    } else if (state.liveDataEnabled) {
+      console.warn('[OpenAlgo] Live data enabled but missing credentials. wsUrl:', state.wsUrl, 'apiKey:', settings.apiKey ? 'present' : 'MISSING');
     }
+  } else {
+    console.warn('[OpenAlgo] Scalping mode not fully configured. uiMode:', settings.uiMode, 'symbols:', settings.symbols?.length, 'apiKey:', settings.apiKey ? 'present' : 'MISSING', 'hostUrl:', settings.hostUrl);
   }
 }
 
-// Load settings from chrome storage
-function loadSettings() {
+function isChromeStorageAvailable() {
+  return typeof chrome !== 'undefined' && chrome?.storage?.sync;
+}
+
+function safeStorageGet(keys) {
   return new Promise((resolve) => {
-    chrome.storage.sync.get(['hostUrl', 'apiKey', 'symbols', 'activeSymbolId', 'uiMode', 'symbol', 'exchange', 'product', 'quantity', 'theme', 'refreshMode', 'refreshIntervalSec', 'refreshAreas', 'strikeMode', 'wsUrl', 'liveDataEnabled'], (data) => {
-      state.theme = data.theme || 'dark';
-      state.refreshMode = data.refreshMode || 'auto';
-      state.refreshIntervalSec = data.refreshIntervalSec || 5;
-      state.refreshAreas = data.refreshAreas || { funds: true, underlying: true, selectedStrike: true };
-      state.strikeMode = data.strikeMode || 'moneyness';
-      state.useMoneyness = state.strikeMode === 'moneyness';
-      state.wsUrl = data.wsUrl || 'ws://127.0.0.1:8765';
-      state.liveDataEnabled = data.liveDataEnabled || false;
-
-      // Default symbols if none exist
-      let symbols = data.symbols || [];
-      if (symbols.length === 0) {
-        symbols = [{
-          id: 'default-nifty',
-          symbol: 'NIFTY',
-          exchange: 'NSE_INDEX',
-          optionExchange: 'NFO',
-          productType: 'MIS'
-        }];
-      }
-
-      resolve({
-        hostUrl: data.hostUrl || 'http://127.0.0.1:5000',
-        apiKey: data.apiKey || '',
-        symbols: symbols,
-        activeSymbolId: data.activeSymbolId || symbols[0]?.id || '',
-        uiMode: data.uiMode || 'scalping',
-        symbol: data.symbol || '',
-        exchange: data.exchange || 'NSE',
-        product: data.product || 'MIS',
-        quantity: data.quantity || '1'
+    if (!isChromeStorageAvailable()) {
+      console.warn('[OpenAlgo] chrome.storage.sync unavailable; falling back to defaults.');
+      resolve({});
+      return;
+    }
+    try {
+      chrome.storage.sync.get(keys, (data) => {
+        if (chrome.runtime?.lastError) {
+          console.warn('[OpenAlgo] Failed to read settings:', chrome.runtime.lastError.message);
+          resolve({});
+        } else {
+          resolve(data || {});
+        }
       });
-    });
+    } catch (error) {
+      console.warn('[OpenAlgo] Exception while reading settings:', error);
+      resolve({});
+    }
   });
 }
 
-// Save settings
-function saveSettings(newSettings) {
+function safeStorageSet(payload) {
   return new Promise((resolve) => {
-    chrome.storage.sync.set(newSettings, () => {
-      Object.assign(settings, newSettings);
-      resolve();
-    });
+    if (!isChromeStorageAvailable()) {
+      console.warn('[OpenAlgo] chrome.storage.sync unavailable; settings will not persist.');
+      resolve(false);
+      return;
+    }
+    try {
+      chrome.storage.sync.set(payload, () => {
+        if (chrome.runtime?.lastError) {
+          console.warn('[OpenAlgo] Failed to save settings:', chrome.runtime.lastError.message);
+          resolve(false);
+        } else {
+          resolve(true);
+        }
+      });
+    } catch (error) {
+      console.warn('[OpenAlgo] Exception while saving settings:', error);
+      resolve(false);
+    }
   });
+}
+
+// Load settings from chrome storage
+async function loadSettings() {
+  const storageKeys = ['hostUrl', 'apiKey', 'symbols', 'activeSymbolId', 'uiMode', 'symbol', 'exchange', 'product', 'quantity', 'theme', 'refreshMode', 'refreshIntervalSec', 'refreshAreas', 'strikeMode', 'wsUrl', 'liveDataEnabled'];
+  const data = await safeStorageGet(storageKeys);
+
+  state.theme = data.theme || 'dark';
+  state.refreshMode = data.refreshMode || 'auto';
+  state.refreshIntervalSec = data.refreshIntervalSec || 5;
+  state.refreshAreas = data.refreshAreas || { funds: true, underlying: true, selectedStrike: true };
+  state.strikeMode = data.strikeMode || 'moneyness';
+  state.useMoneyness = state.strikeMode === 'moneyness';
+  state.wsUrl = data.wsUrl || 'ws://127.0.0.1:8765';
+  state.liveDataEnabled = data.liveDataEnabled || false;
+
+  // Default symbols if none exist
+  let symbols = data.symbols || [];
+  if (symbols.length === 0) {
+    symbols = [{
+      id: 'default-nifty',
+      symbol: 'NIFTY',
+      exchange: 'NSE_INDEX',
+      optionExchange: 'NFO',
+      productType: 'MIS'
+    }];
+  }
+
+  return {
+    hostUrl: data.hostUrl || 'http://127.0.0.1:5000',
+    apiKey: data.apiKey || '',
+    symbols: symbols,
+    activeSymbolId: data.activeSymbolId || symbols[0]?.id || '',
+    uiMode: data.uiMode || 'scalping',
+    symbol: data.symbol || '',
+    exchange: data.exchange || 'NSE',
+    product: data.product || 'MIS',
+    quantity: data.quantity || '1'
+  };
+}
+
+// Save settings
+async function saveSettings(newSettings) {
+  console.log('[OpenAlgo] Saving settings:', { apiKey: newSettings.apiKey ? '***' : 'MISSING', hostUrl: newSettings.hostUrl, wsUrl: newSettings.wsUrl });
+  const success = await safeStorageSet(newSettings);
+  if (success) {
+    Object.assign(settings, newSettings);
+    console.log('[OpenAlgo] Settings saved successfully. Updated settings:', { apiKey: settings.apiKey ? '***' : 'MISSING', hostUrl: settings.hostUrl });
+    
+    // Verify settings were actually saved by reading them back
+    setTimeout(async () => {
+      const verify = await safeStorageGet(['apiKey', 'hostUrl', 'wsUrl']);
+      console.log('[OpenAlgo] Verification - Settings in Chrome storage:', { apiKey: verify.apiKey ? '***' : 'MISSING', hostUrl: verify.hostUrl, wsUrl: verify.wsUrl });
+    }, 100);
+  } else {
+    console.warn('[OpenAlgo] Failed to save settings to Chrome storage');
+  }
+  return success;
 }
 
 // Get active symbol config
@@ -248,18 +314,46 @@ function extractTimeFromTimestamp(timestamp) {
   return '';
 }
 
-// API call helper
+// API call helper with backend connectivity check
+let backendUnreachable = false;
+let backendUnreachableTime = 0;
+const BACKEND_RETRY_DELAY = 30000; // 30 seconds before retrying after backend is unreachable
+
 async function apiCall(endpoint, data) {
+  // If backend was recently unreachable, skip the call to avoid spam
+  if (backendUnreachable && Date.now() - backendUnreachableTime < BACKEND_RETRY_DELAY) {
+    return { status: 'error', message: 'Backend unreachable. Retrying in ' + Math.ceil((BACKEND_RETRY_DELAY - (Date.now() - backendUnreachableTime)) / 1000) + 's' };
+  }
+  
   try {
     const response = await fetch(`${settings.hostUrl}${endpoint}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ apikey: settings.apiKey, ...data })
     });
+    
+    // Check for 403 or other error responses
+    if (!response.ok) {
+      if (response.status === 403) {
+        console.warn('[OpenAlgo] API returned 403 Forbidden. Backend may be unreachable or API key invalid.');
+        backendUnreachable = true;
+        backendUnreachableTime = Date.now();
+        return { status: 'error', message: 'API authentication failed (403)' };
+      }
+      console.warn(`[OpenAlgo] API returned ${response.status}`);
+    }
+    
+    // Reset unreachable flag on successful response
+    if (response.ok) {
+      backendUnreachable = false;
+    }
+    
     return await response.json();
   } catch (error) {
-    console.error('API Error:', error);
-    return { status: 'error', message: error.message };
+    console.warn('[OpenAlgo] API call failed:', error.message);
+    backendUnreachable = true;
+    backendUnreachableTime = Date.now();
+    return { status: 'error', message: 'Backend unreachable: ' + error.message };
   }
 }
 
@@ -281,82 +375,67 @@ const debouncedFetchStrikeLTPs = debounce(() => _fetchStrikeLTPs(), 200, 'strike
 
 // ============ WebSocket Functions ============
 
-// Connect to WebSocket server
+// Connect to live data polling via background service worker
 function wsConnect() {
-  if (ws && ws.readyState === WebSocket.OPEN) return;
-  if (!state.wsUrl || !settings.apiKey) {
-    console.log('WebSocket: Missing URL or API key');
+  if (!settings.apiKey) {
+    console.log('[OpenAlgo] Live data: Missing API key');
     return;
   }
 
-  try {
-    ws = new WebSocket(state.wsUrl);
-
-    ws.onopen = () => {
-      console.log('WebSocket: Connected');
-      wsReconnectAttempts = 0; // Reset attempts on successful connection
-      // Authenticate
-      ws.send(JSON.stringify({ action: 'authenticate', api_key: settings.apiKey }));
-    };
-
-    ws.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        handleWsMessage(data);
-      } catch (e) {
-        console.error('WebSocket: Parse error', e);
-      }
-    };
-
-    ws.onclose = () => {
-      console.log('WebSocket: Disconnected');
-      ws = null;
-      // Auto-reconnect with exponential backoff if still enabled
-      if (state.liveDataEnabled) {
-        wsReconnectAttempts++;
-        if (wsReconnectAttempts <= WS_MAX_RECONNECT_ATTEMPTS) {
-          const delay = Math.min(1000 * Math.pow(2, wsReconnectAttempts - 1), 30000); // 1s, 2s, 4s, 8s, 16s (capped at 30s)
-          console.log(`WebSocket: Reconnecting in ${delay / 1000}s (attempt ${wsReconnectAttempts}/${WS_MAX_RECONNECT_ATTEMPTS})`);
-          clearTimeout(wsReconnectTimer);
-          wsReconnectTimer = setTimeout(() => wsConnect(), delay);
-        } else {
-          // Max retries exhausted, disable live mode
-          console.log('WebSocket: Max reconnection attempts reached, disabling live mode');
-          state.liveDataEnabled = false;
-          wsReconnectAttempts = 0;
-          showNotification('Live data disconnected. Enable again to retry.', 'error', 3000);
-          // Update UI to reflect disabled state
-          const liveBtn = document.getElementById('oa-live-btn');
-          if (liveBtn) {
-            liveBtn.textContent = '○ Live';
-            liveBtn.className = 'oa-btn';
-          }
-        }
-      }
-    };
-
-    ws.onerror = (error) => {
-      console.error('WebSocket: Error', error);
-    };
-  } catch (e) {
-    console.error('WebSocket: Connection failed', e);
-  }
+  console.log('[OpenAlgo] Requesting background worker to start live data polling');
+  chrome.runtime.sendMessage({
+    action: 'ws_connect',
+    apiKey: settings.apiKey,
+    hostUrl: settings.hostUrl
+  }, (response) => {
+    if (response) {
+      console.log('[OpenAlgo] Background worker response:', response.status);
+      wsReconnectAttempts = 0;
+    }
+  });
 }
 
 // Disconnect from WebSocket server
 function wsDisconnect() {
   clearTimeout(wsReconnectTimer);
-  if (ws) {
-    ws.close();
-    ws = null;
-  }
+  chrome.runtime.sendMessage({ action: 'ws_disconnect' }, () => {});
+  ws = null;
   wsSubscriptions = { underlying: null, strike: null };
 }
 
-// Subscribe to a symbol for LTP updates
-function wsSubscribe(symbol, exchange, type) {
-  if (!ws || ws.readyState !== WebSocket.OPEN) return;
+// Listen for messages from background service worker
+chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  if (request.action === 'ws_connected') {
+    console.log('[OpenAlgo] Live data polling started');
+    wsReconnectAttempts = 0;
+    updateWsSubscriptions();
+  } else if (request.action === 'ws_message') {
+    console.log('[OpenAlgo] Market data received');
+    handleWsMessage(request.data);
+  } else if (request.action === 'ws_error') {
+    console.error('[OpenAlgo] Live data error:', request.error);
+    wsReconnectAttempts++;
+    if (wsReconnectAttempts <= WS_MAX_RECONNECT_ATTEMPTS) {
+      const delay = Math.min(1000 * Math.pow(2, wsReconnectAttempts - 1), 30000);
+      console.log(`[OpenAlgo] Reconnecting in ${delay / 1000}s (attempt ${wsReconnectAttempts}/${WS_MAX_RECONNECT_ATTEMPTS})`);
+      clearTimeout(wsReconnectTimer);
+      wsReconnectTimer = setTimeout(() => wsConnect(), delay);
+    } else {
+      console.error('[OpenAlgo] Max reconnection attempts reached, disabling live mode');
+      state.liveDataEnabled = false;
+      wsReconnectAttempts = 0;
+      showNotification('Live data disconnected. Enable again to retry.', 'error', 3000);
+      const liveBtn = document.getElementById('oa-live-btn');
+      if (liveBtn) {
+        liveBtn.textContent = '○ Live';
+        liveBtn.className = 'oa-btn';
+      }
+    }
+  }
+});
 
+// Subscribe to a symbol for LTP updates via background worker
+function wsSubscribe(symbol, exchange, type) {
   const key = type === 'underlying' ? 'underlying' : 'strike';
 
   // If already subscribed to the same symbol, do nothing
@@ -369,26 +448,32 @@ function wsSubscribe(symbol, exchange, type) {
     wsUnsubscribe(wsSubscriptions[key].symbol, wsSubscriptions[key].exchange, type);
   }
 
-  ws.send(JSON.stringify({
-    action: 'subscribe',
-    symbol: symbol,
-    exchange: exchange,
-    mode: 1 // LTP mode
-  }));
-
-  wsSubscriptions[key] = { symbol, exchange };
+  chrome.runtime.sendMessage({
+    action: 'ws_send',
+    data: {
+      action: 'subscribe',
+      symbol: symbol,
+      exchange: exchange,
+      mode: 1 // LTP mode
+    }
+  }, (response) => {
+    if (response && response.status === 'sent') {
+      wsSubscriptions[key] = { symbol, exchange };
+    }
+  });
 }
 
-// Unsubscribe from a symbol
+// Unsubscribe from a symbol via background worker
 function wsUnsubscribe(symbol, exchange, type) {
-  if (!ws || ws.readyState !== WebSocket.OPEN) return;
-
-  ws.send(JSON.stringify({
-    action: 'unsubscribe',
-    symbol: symbol,
-    exchange: exchange,
-    mode: 1
-  }));
+  chrome.runtime.sendMessage({
+    action: 'ws_send',
+    data: {
+      action: 'unsubscribe',
+      symbol: symbol,
+      exchange: exchange,
+      mode: 1
+    }
+  }, () => {});
 
   const key = type === 'underlying' ? 'underlying' : 'strike';
   wsSubscriptions[key] = null;
@@ -2965,8 +3050,20 @@ function setupSettingsEvents(panel) {
     }
 
     const modeChanged = newSettings.uiMode !== settings.uiMode;
+    const apiKeyChanged = newSettings.apiKey !== settings.apiKey;
+    const wsUrlChanged = newSettings.wsUrl !== state.wsUrl;
+    
     await saveSettings(newSettings);
     showNotification('Settings saved!', 'success');
+
+    // If API key or WebSocket URL changed, attempt to reconnect
+    if (apiKeyChanged || wsUrlChanged) {
+      console.log('[OpenAlgo] API key or WebSocket URL changed, attempting reconnection');
+      if (state.liveDataEnabled) {
+        wsDisconnect();
+        setTimeout(() => wsConnect(), 500);
+      }
+    }
 
     // Apply UI mode change without full reload - rebuild UI
     if (modeChanged) {
