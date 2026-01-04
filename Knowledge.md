@@ -61,8 +61,12 @@ The UI is designed with a "Single Row" philosophy for the main controls to ensur
     *   **Refresh Button (↻):** Manually fetches `openposition` API.
     *   **Editing:** Click to make editable, allowing manual override of tracking quantity.
 *   **Resize Button:**
-    *   **Default State:** "Resize 0" (Closes the entire position).
-    *   **Edit State:** If Net Position is edited, button updates to "Resize X" to adjust position to that size.
+    *   **Default State:** "Resize 0" (Closes the entire position for the selected strike).
+    *   **Edit State:** If Net Position is edited, button updates to "Resize X" to adjust position to that specific size.
+*   **SL Button:**
+    *   **Disabled:** If no open position exists for the selected strike (greyed out).
+    *   **Enabled:** If an open position exists. Shows count of pending SL orders.
+    *   **Interaction:** Clicking opens the **Stop Loss (SL) Panel**.
 
 ### C. Strike Selection System
 **Requirement:** A slide-out/dropdown interface for selecting specific option strikes based on Expiry and Moneyness.
@@ -121,11 +125,12 @@ The UI is designed with a "Single Row" philosophy for the main controls to ensur
 *   **Footer Stats:** Total trades, Buy count, Sell count.
 
 #### **Positions Tab**
+*   **Filter Buttons:** Open, Closed.
 *   **Position Display:** Symbol, Position State tag (LONG/SHORT/FLAT color-coded), Product Type.
 *   **Position Details:** Lots, Average Price, LTP, P&L (with unrealized in braces).
 *   **Edit Button:**
-    *   Always visible for **open** positions.
-    *   Appears on **hover only** for **closed (FLAT)** positions.
+    *   **Always visible** for **open** positions.
+    *   **Appears on hover only** for **closed (FLAT)** positions.
 *   **Resize Functionality:** Click edit to enter edit mode, set target lots, and resize position via `placesmartorder` API.
 *   **Footer:**
     *   **Refresh Button:** Manually refreshes positions.
@@ -133,7 +138,23 @@ The UI is designed with a "Single Row" philosophy for the main controls to ensur
     *   **Stats:** Open position count (Long/Short breakdown).
     *   **Total P&L:** Sum of all position P&L (color-coded green/red).
 
-### F. Refresh Panel (Compact)
+### F. Stop Loss (SL) Panel
+**Requirement:** Manage pending Stop Loss orders specifically for the current open position.
+*   **Position Info:** Displays current position type (LONG/SHORT) and size in lots.
+*   **Coverage Tracking:**
+*   **Covered Lots:** Sum of quantities in pending SL orders.
+*   **Remaining/Uncovered Lots:** Difference between current position and covered lots.
+*   **SL Order List:**
+*   Shows all pending SL/SL-M orders for the active symbol with opposite action (e.g., SELL for LONG).
+*   **Batch Selection:** Checkboxes for selecting specific orders.
+*   **Inline Editing:** Edit Lots, Trigger Price, and Limit Price.
+*   **Actions:**
+*   **+ Add SL:** Prepeands a new SL order form with pre-filled uncovered quantity and current LTP.
+*   **Exit at Market:** Modifies selected/all SL orders to `MARKET` type for instant execution.
+*   **Cancel All:** Cancels selected/all SL orders for the current symbol.
+*   **Sync Logic:** Auto-closes if position becomes FLAT. Refresh button (↻) to sync position and orders.
+
+### G. Refresh Panel (Compact)
 *   **Compact Design:** Right-aligned overlay.
 *   **Modes:** 
     *   **Manual:** No auto-refresh.
@@ -167,14 +188,20 @@ When a user selects a new underlying symbol:
 
 ### 3. Strike Chain Loading
 Triggered when Expiry is selected or Symbol is changed:
-1.  **Smart Fetch:**
-    *   Fetches **ATM** and **ITM1** using `POST /api/v1/optionsymbol`.
-    *   Calculates `Strike Interval` locally.
-2.  **Local Build:** Dynamically generates the rest of the chain (ITM5...OTM5) based on interval.
+1.  **Optimized Fetch:**
+    *   Fetches only **ATM** and **ITM1** using `POST /api/v1/optionsymbol`.
+    *   Calculates **Strike Interval** (e.g., 50 or 100 points) from the difference.
+2.  **Local Build:** Dynamically generates the rest of the chain (ITM5...OTM5) locally based on the interval.
 3.  **LTP Fetch:** `POST /api/v1/multiquotes` for all generated symbols.
 4.  **Visuals:** Loading animations on columns.
 
-### 4. Refresh Logic (Selected Strike)
+### 4. CE/PE Switching
+**Zero-API Switch:** When toggling between Call and Put:
+1.  **Local Swap:** Swaps ITM and OTM offsets locally based on the existing strike interval.
+2.  **Rebuild Symbols:** Generates new option symbols (e.g., NIFTY...CE -> NIFTY...PE).
+3.  **LTP Refresh:** Only fetches new LTPs via `/api/v1/multiquotes`, avoiding expensive backend resolving.
+
+### 5. Refresh Logic (Selected Strike)
 **Optimized Refresh:** Updates only the relevant data.
 *   **Moneyness Mode:**
     1.  `POST /api/v1/optionsymbol` (Resolve latest strike for current offset).
@@ -183,7 +210,7 @@ Triggered when Expiry is selected or Symbol is changed:
     1.  `POST /api/v1/quotes` (Get LTP for selected symbol).
 *   **WebSocket:** If connected, updates Underlying and Market Price (in MARKET order mode) in real-time.
 
-### 5. Order Placement
+### 6. Order Placement
 A. **Moneyness-Based (M Mode)**
 *   **API:** `POST /api/v1/optionsorder`
 *   **Logic:** Backend resolves ATM strike based on spot and places order.
@@ -203,27 +230,31 @@ D. **Margin Calculation**
 *   **API:** `POST /api/v1/margin`
 *   **Debounce:** API calls are throttled (200ms-1s) to prevent spam.
 
-### 6. Order Management
+### 7. Order Management
 *   **Orderbook Fetch:** `POST /api/v1/orderbook` on dropdown open or refresh.
 *   **Order Modify:** `POST /api/v1/modifyorder` with updated Lots, Price, Trigger Price.
 *   **Order Cancel:** `POST /api/v1/cancelorder` with orderId and strategy.
 *   **Cancel All:** `POST /api/v1/cancelallorder` for batch cancellation.
 
-### 7. Tradebook
+### 8. Tradebook
 *   **Fetch Trades:** `POST /api/v1/tradebook` retrieves all executed trades.
 *   **LTP Fetch:** `POST /api/v1/multiquotes` for real-time LTP of traded symbols.
 
-### 8. Positions Management
+### 9. Positions Management
 *   **Fetch Positions:** `POST /api/v1/positionbook` retrieves all positions.
 *   **Position Resize:** `POST /api/v1/placesmartorder` to adjust position size.
 *   **Close All Positions:** `POST /api/v1/closeposition` to square off all positions.
 
-### 9. WebSocket Integration
+### 10. WebSocket Integration
 *   **Connection:** `ws://<host>:<port>` (Default port 8765).
+*   **Authentication:** Sends `api_key` upon connection.
 *   **Subscriptions:**
     *   **Underlying:** Always subscribed for active symbol.
     *   **Strike:** Subscribed only when Order Type is `MARKET`.
-*   **Throttling:** Uses `requestAnimationFrame` to limit UI repaints.
+*   **Reliability:** 
+    *   **Auto-Reconnect:** Exponential backoff strategy (1s, 2s, 4s...) capped at 30s.
+    *   **Max Retries:** Disables after 5 failed attempts with user notification.
+*   **Throttling:** Uses `requestAnimationFrame` to batch UI repaints and prevent browser lag.
 
 ---
 
@@ -250,15 +281,15 @@ D. **Margin Calculation**
 18. **Close All Positions:** `/api/v1/closeposition`
 
 ### B. Event Handling Logic
-*   **Debounce:** `debounceTimers` used for Margin, Quotes, Funds, and Open Position to reduce API load.
+*   **Debounce:** `debounceTimers` used for Margin (200ms), Quotes (300ms), Funds (300ms), and Open Position (200ms).
 *   **Input Handling:**
-    *   **Lots/Price:** Update state on input, validate on blur.
-    *   **Net Position:** Click enables editing for manual override.
+    *   **Lots/Price:** Click to enable editing, validate on blur.
+    *   **Net Position:** Editable for manual override; committing value triggers Resize button update.
+*   **Validation:**
+    *   **Settings:** Strict validation for Host URL (must be http/https) and WebSocket URL (ws/ws).
+    *   **Test Connection:** Ping `/api/v1/ping` during setup to verify credentials.
 *   **Theme Engine:** CSS classes `oa-light-theme` / `oa-dark-theme` controlled by `state.theme`.
-*   **Timestamp Parsing:** Helper function `extractTimeFromTimestamp()` supports multiple broker formats:
-    *   `HH:MM:SS DD-MM-YYYY` (Flattrade)
-    *   `DD-Mon-YYYY HH:MM:SS` (AngelOne)
-    *   `YYYY-MM-DD HH:MM:SS` (Standard)
+*   **Timestamp Parsing:** Helper function `extractTimeFromTimestamp()` uses regex to find `HH:MM:SS` in various broker formats (Flattrade, AngelOne, etc.).
 
 ### C. Lot Size Caching
 *   **Purpose:** Avoid redundant `/api/v1/symbol` calls for lot size.
