@@ -97,6 +97,9 @@ async function init() {
       // Wait for connection before subscribing
       setTimeout(() => updateWsSubscriptions(), 1500);
     }
+  } else if (!settings.apiKey || !settings.hostUrl) {
+    // Show setup prompt if credentials missing
+    showNotification('⚙️ Configure Host URL & API Key in Settings to start', 'info', 5000);
   }
 }
 
@@ -260,6 +263,68 @@ async function apiCall(endpoint, data) {
   } catch (error) {
     console.error('API Error:', error);
     return { status: 'error', message: error.message };
+  }
+}
+
+// URL validation helper - checks if string is a valid URL with expected protocol
+function isValidUrl(url, protocol = 'http') {
+  if (!url || typeof url !== 'string') return false;
+  try {
+    const parsed = new URL(url.trim());
+    if (protocol === 'ws') {
+      return ['ws:', 'wss:'].includes(parsed.protocol);
+    }
+    return ['http:', 'https:'].includes(parsed.protocol);
+  } catch {
+    return false;
+  }
+}
+
+// Validate settings before save - returns array of error messages
+function validateSettings(hostUrl, apiKey, wsUrl) {
+  const errors = [];
+
+  // Host URL validation
+  if (!hostUrl?.trim()) {
+    errors.push('Host URL is required');
+  } else if (!isValidUrl(hostUrl)) {
+    errors.push('Host URL must be a valid HTTP/HTTPS URL (e.g., http://127.0.0.1:5000)');
+  }
+
+  // API Key validation
+  if (!apiKey?.trim()) {
+    errors.push('API Key is required');
+  }
+
+  // WebSocket URL validation (optional but must be valid if provided)
+  if (wsUrl?.trim() && !isValidUrl(wsUrl, 'ws')) {
+    errors.push('WebSocket URL must be a valid WS/WSS URL (e.g., ws://127.0.0.1:8765)');
+  }
+
+  return errors;
+}
+
+// Test connection to OpenAlgo server using ping endpoint
+async function testConnection(hostUrl, apiKey) {
+  if (!hostUrl || !apiKey) {
+    return { success: false, message: 'Host URL and API Key are required' };
+  }
+
+  try {
+    const response = await fetch(`${hostUrl.trim()}/api/v1/ping`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ apikey: apiKey.trim() })
+    });
+    const result = await response.json();
+
+    if (result.status === 'success') {
+      return { success: true, message: 'Connection successful!' };
+    } else {
+      return { success: false, message: result.message || 'Invalid API Key' };
+    }
+  } catch (error) {
+    return { success: false, message: `Connection failed: ${error.message}` };
   }
 }
 
@@ -623,6 +688,9 @@ async function fetchExpiry() {
     if (state.selectedExpiry) {
       await fetchStrikeChain();
     }
+  } else {
+    // Show error notification for API failure
+    showNotification(`Failed to fetch expiry: ${result.message || 'Unknown error'}`, 'error', 3000);
   }
 }
 
@@ -670,6 +738,7 @@ async function fetchStrikeChain() {
 
     if (atmResult.status !== 'success' || itm1Result.status !== 'success') {
       console.error('Failed to fetch ATM/ITM1 strikes');
+      showNotification('Failed to fetch strike chain', 'error', 2000);
       isFetchingStrikeChain = false;
       state.loading.strikes = false;
       hideLoadingIndicator('strikes');
@@ -2777,7 +2846,10 @@ function buildSettingsPanel() {
         </select>
       </div>
       ${isScalping ? buildSymbolSettings() : buildQuickSettings()}
-      <button id="oa-save-settings" class="oa-btn primary">Save Settings</button>
+      <div class="oa-settings-buttons" style="display: flex; gap: 8px; margin-top: 12px;">
+        <button id="oa-test-connection" class="oa-btn" style="flex: 1;">Test Connection</button>
+        <button id="oa-save-settings" class="oa-btn primary" style="flex: 1;">Save Settings</button>
+      </div>
     </div>
   `;
 }
@@ -2945,14 +3017,52 @@ function setupSettingsEvents(panel) {
     });
   });
 
+  // Test Connection button handler
+  panel.querySelector('#oa-test-connection')?.addEventListener('click', async (e) => {
+    const btn = e.target;
+    const hostUrl = panel.querySelector('#oa-host')?.value;
+    const apiKey = panel.querySelector('#oa-apikey')?.value;
+
+    // Validate before testing
+    const errors = validateSettings(hostUrl, apiKey, null);
+    if (errors.length > 0) {
+      showNotification(errors[0], 'error', 3000);
+      return;
+    }
+
+    btn.disabled = true;
+    btn.textContent = 'Testing...';
+
+    const result = await testConnection(hostUrl, apiKey);
+
+    btn.disabled = false;
+    btn.textContent = 'Test Connection';
+
+    if (result.success) {
+      showNotification(result.message, 'success', 2000);
+    } else {
+      showNotification(result.message, 'error', 3000);
+    }
+  });
+
   // Save settings
   panel.querySelector('#oa-save-settings')?.addEventListener('click', async () => {
     const newWsUrl = panel.querySelector('#oa-wsurl')?.value || 'ws://127.0.0.1:8765';
+    const hostUrl = panel.querySelector('#oa-host').value;
+    const apiKey = panel.querySelector('#oa-apikey').value;
+
+    // Validate settings before saving
+    const errors = validateSettings(hostUrl, apiKey, newWsUrl);
+    if (errors.length > 0) {
+      showNotification(errors[0], 'error', 3000);
+      return;
+    }
+
     state.wsUrl = newWsUrl;
 
     const newSettings = {
-      hostUrl: panel.querySelector('#oa-host').value,
-      apiKey: panel.querySelector('#oa-apikey').value,
+      hostUrl: hostUrl,
+      apiKey: apiKey,
       uiMode: panel.querySelector('#oa-uimode').value,
       wsUrl: newWsUrl
     };
