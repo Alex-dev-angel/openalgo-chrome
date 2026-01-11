@@ -52,6 +52,7 @@ let isInitialized = false;
 let expiryList = [];
 let strikeChain = [];
 let settings = {};
+let shadowRoot = null; // Shadow DOM root for isolation
 
 // WebSocket connection
 let ws = null;
@@ -69,19 +70,43 @@ const lotSizeCache = {};
 document.addEventListener('DOMContentLoaded', init);
 if (document.readyState === 'interactive' || document.readyState === 'complete') init();
 
+// Helper function to query elements within shadow DOM
+function getElementById(id) {
+  if (shadowRoot) {
+    return shadowRoot.getElementById(id);
+  }
+  return document.getElementById(id);
+}
+
+// Helper function to query selector within shadow DOM
+function querySelector(selector) {
+  if (shadowRoot) {
+    return shadowRoot.querySelector(selector);
+  }
+  return document.querySelector(selector);
+}
+
+// Helper function to query all selectors within shadow DOM
+function querySelectorAll(selector) {
+  if (shadowRoot) {
+    return shadowRoot.querySelectorAll(selector);
+  }
+  return document.querySelectorAll(selector);
+}
+
 async function init() {
   // Prevent multiple initializations
-  if (isInitialized || document.getElementById('openalgo-controls')) return;
+  const existingContainer = getElementById('openalgo-controls');
+  if (isInitialized || existingContainer) return;
 
   isInitialized = true;
   settings = await loadSettings();
-  injectStyles();
-  injectUI();
+  injectUI(); // injectStyles() is now called inside injectUI()
   applyTheme(state.theme);
   updateModeIndicator(); // Update mode indicator on init
   if (settings.uiMode === 'scalping' && settings.symbols?.length > 0 && settings.apiKey && settings.hostUrl) {
     // Add loading animation to strike button during initial loading
-    const strikeBtn = document.getElementById('oa-strike-btn');
+    const strikeBtn = getElementById('oa-strike-btn');
     strikeBtn?.classList.add('oa-loading');
 
     state.fetchOpenPosAfterMargin = true; // Enable netposition fetch after first margin call during init
@@ -89,7 +114,8 @@ async function init() {
     startDataRefresh();
 
     // Remove loading animation after initial data loading
-    strikeBtn?.classList.remove('oa-loading');
+    const strikeBtnAfter = getElementById('oa-strike-btn');
+    strikeBtnAfter?.classList.remove('oa-loading');
 
     // Auto-connect WebSocket if live data is enabled
     if (state.liveDataEnabled && state.wsUrl) {
@@ -204,7 +230,7 @@ function getApiQuantity() {
 }
 
 function syncQuantityInput() {
-  const lotsInput = document.getElementById('oa-lots');
+  const lotsInput = getElementById('oa-lots');
   if (!lotsInput) return;
   // Keep loading state until lot size and a valid quantity are known
   if (!state.lotSize || !state.lots) return;
@@ -391,7 +417,7 @@ function wsConnect() {
           wsReconnectAttempts = 0;
           showNotification('Live data disconnected. Enable again to retry.', 'error', 3000);
           // Update UI to reflect disabled state
-          const liveBtn = document.getElementById('oa-live-btn');
+          const liveBtn = getElementById('oa-live-btn');
           if (liveBtn) {
             liveBtn.textContent = '○ Live';
             liveBtn.className = 'oa-btn';
@@ -506,7 +532,7 @@ function applyPendingWsUpdates() {
   // Update strike price (MARKET mode only)
   if (pendingWsUpdate.strike !== null && state.orderType === 'MARKET') {
     state.optionLtp = pendingWsUpdate.strike;
-    const priceEl = document.getElementById('oa-price');
+    const priceEl = getElementById('oa-price');
     if (priceEl) {
       priceEl.value = state.optionLtp.toFixed(2);
       updateOrderButton();
@@ -650,7 +676,7 @@ async function _fetchOpenPosition() {
     updateNetPosDisplay(quantity);
 
     // Reset netpos input editing state on successful API fetch
-    const netposEl = document.getElementById('oa-netpos');
+    const netposEl = getElementById('oa-netpos');
     if (netposEl) {
       netposEl.dataset.editing = 'false';
       netposEl.dataset.qty = quantity.toString();
@@ -1132,14 +1158,14 @@ function showNotification(message, type, duration = 1000) {
 
 // UI update functions
 function updateUnderlyingDisplay() {
-  const el = document.getElementById('oa-underlying-ltp');
+  const el = getElementById('oa-underlying-ltp');
   if (!el) return;
   const { change, changePercent, sign, colorClass } = getChangeDisplay(state.underlyingLtp, state.underlyingPrevClose);
   el.innerHTML = `<span class="oa-ltp-value ${colorClass}">${formatNumber(state.underlyingLtp)}</span> <span class="oa-change-text">${sign}${formatNumber(change)} (${sign}${changePercent.toFixed(2)}%)</span>`;
 }
 
 function updateFundsDisplay(available, todayPL) {
-  const el = document.getElementById('oa-funds');
+  const el = getElementById('oa-funds');
   if (!el) return;
   const plClass = todayPL >= 0 ? 'positive' : 'negative';
   const plSign = todayPL >= 0 ? '+' : '';
@@ -1147,7 +1173,7 @@ function updateFundsDisplay(available, todayPL) {
 }
 
 function updateNetPosDisplay(quantity) {
-  const el = document.getElementById('oa-netpos');
+  const el = getElementById('oa-netpos');
   if (el) {
     state.currentNetQty = quantity;
     // Always display in lots
@@ -1160,7 +1186,7 @@ function updateNetPosDisplay(quantity) {
 }
 
 function updateNetPosDisplayMode() {
-  const el = document.getElementById('oa-netpos');
+  const el = getElementById('oa-netpos');
   if (el) {
     // Only update if not editing (though API fetch usually resets editing state)
     if (el.dataset.editing === 'true') return;
@@ -1174,7 +1200,7 @@ function updateNetPosDisplayMode() {
 }
 
 function updateModeIndicator() {
-  const el = document.getElementById('oa-mode-indicator');
+  const el = getElementById('oa-mode-indicator');
   if (el) {
     el.textContent = 'LOTS';
     // Show lot size in tooltip when hovering
@@ -1189,7 +1215,7 @@ function updateModeIndicator() {
 }
 
 function getTargetNetQty() {
-  const el = document.getElementById('oa-netpos');
+  const el = getElementById('oa-netpos');
   if (!el) return 0;
   // dataset.qty stores base quantity (qty units)
   const datasetQty = parseInt(el.dataset.qty || '0', 10);
@@ -1200,8 +1226,8 @@ function getTargetNetQty() {
 }
 
 function updateResizeButton() {
-  const btn = document.getElementById('oa-resize-btn');
-  const netposEl = document.getElementById('oa-netpos');
+  const btn = getElementById('oa-resize-btn');
+  const netposEl = getElementById('oa-netpos');
   if (!btn || !netposEl) return;
 
   const isEditing = netposEl.dataset.editing === 'true';
@@ -1224,10 +1250,10 @@ function updateResizeButton() {
 // ============ SL (Stop Loss) Functions ============
 
 function updateSLButton() {
-  const btn = document.getElementById('oa-sl-btn');
+  const btn = getElementById('oa-sl-btn');
   if (!btn) return;
 
-  const netposEl = document.getElementById('oa-netpos');
+  const netposEl = getElementById('oa-netpos');
   const currentQty = netposEl ? parseInt(netposEl.dataset.qty || '0', 10) : 0;
 
   if (currentQty === 0) {
@@ -1251,7 +1277,7 @@ async function fetchSLOrdersForPosition() {
     return;
   }
 
-  const netposEl = document.getElementById('oa-netpos');
+  const netposEl = getElementById('oa-netpos');
   const currentQty = netposEl ? parseInt(netposEl.dataset.qty || '0', 10) : 0;
 
   if (currentQty === 0) {
@@ -1291,18 +1317,18 @@ async function fetchSLOrdersForPosition() {
 }
 
 function toggleSLPanel(show) {
-  const panel = document.getElementById('oa-sl-panel');
+  const panel = getElementById('oa-sl-panel');
   if (!panel) return;
 
   const isShow = show !== undefined ? show : panel.classList.contains('hidden');
 
   if (isShow) {
-    // Close other panels first
-    toggleStrikeDropdown(false);
+    // Close other panels first (like orders, settings, refresh panels do)
+    // Note: Don't close strike dropdown - same behavior as orders panel
     toggleOrdersDropdown(false);
-    const settingsPanel = document.getElementById('oa-settings-panel');
+    const settingsPanel = getElementById('oa-settings-panel');
     if (settingsPanel) settingsPanel.classList.add('hidden');
-    const refreshPanel = document.getElementById('oa-refresh-panel');
+    const refreshPanel = getElementById('oa-refresh-panel');
     if (refreshPanel) refreshPanel.classList.add('hidden');
 
     // Fetch latest SL orders and render
@@ -1318,13 +1344,13 @@ function toggleSLPanel(show) {
 }
 
 function renderSLPanel() {
-  const list = document.getElementById('oa-sl-list');
-  const posInfoEl = document.getElementById('oa-sl-position-info');
-  const remainingInput = document.getElementById('oa-sl-remaining-lots');
+  const list = getElementById('oa-sl-list');
+  const posInfoEl = getElementById('oa-sl-position-info');
+  const remainingInput = getElementById('oa-sl-remaining-lots');
 
   if (!list) return;
 
-  const netposEl = document.getElementById('oa-netpos');
+  const netposEl = getElementById('oa-netpos');
   const currentQty = netposEl ? parseInt(netposEl.dataset.qty || '0', 10) : 0;
   const currentLots = toLots(Math.abs(currentQty));
   const positionType = currentQty > 0 ? 'LONG' : currentQty < 0 ? 'SHORT' : 'FLAT';
@@ -1353,6 +1379,7 @@ function renderSLPanel() {
   // Render SL orders
   if (state.slOrders.length === 0) {
     list.innerHTML = '<div class="oa-empty-state">No pending SL orders</div>';
+    updateSLButtonTexts();
     return;
   }
 
@@ -1385,10 +1412,18 @@ function renderSLPanel() {
       enterSLEditMode(orderId);
     });
   });
+
+  // Update button texts based on selection
+  updateSLButtonTexts();
+
+  // Add checkbox change listeners
+  list.querySelectorAll('.oa-sl-checkbox').forEach(checkbox => {
+    checkbox.addEventListener('change', updateSLButtonTexts);
+  });
 }
 
 function enterSLEditMode(orderId) {
-  const item = document.querySelector(`.oa-sl-order-item[data-orderid="${orderId}"]`);
+  const item = querySelector(`.oa-sl-order-item[data-orderid="${orderId}"]`);
   if (!item) return;
 
   const order = state.slOrders.find(o => o.orderid === orderId);
@@ -1421,17 +1456,32 @@ function enterSLEditMode(orderId) {
     </div>
   `;
 
-  document.getElementById(`sl-save-${orderId}`)?.addEventListener('click', () => saveSLOrder(orderId));
-  document.getElementById(`sl-cancel-${orderId}`)?.addEventListener('click', () => renderSLPanel());
+  getElementById(`sl-save-${orderId}`)?.addEventListener('click', () => saveSLOrder(orderId));
+  getElementById(`sl-cancel-${orderId}`)?.addEventListener('click', () => renderSLPanel());
+}
+
+function updateSLButtonTexts() {
+  const selectedCount = querySelectorAll('.oa-sl-checkbox:checked').length;
+
+  const exitBtn = getElementById('oa-sl-exit-market');
+  const cancelBtn = getElementById('oa-sl-cancel-all');
+
+  if (exitBtn) {
+    exitBtn.textContent = selectedCount === 0 ? 'Exit all at Mkt' : `Exit ${selectedCount} at Mkt`;
+  }
+
+  if (cancelBtn) {
+    cancelBtn.textContent = selectedCount === 0 ? 'Cancel all' : `Cancel ${selectedCount}`;
+  }
 }
 
 async function saveSLOrder(orderId) {
   const order = state.slOrders.find(o => o.orderid === orderId);
   if (!order) return;
 
-  const lotsInput = document.getElementById(`sl-edit-lots-${orderId}`);
-  const trgInput = document.getElementById(`sl-edit-trg-${orderId}`);
-  const priceInput = document.getElementById(`sl-edit-price-${orderId}`);
+  const lotsInput = getElementById(`sl-edit-lots-${orderId}`);
+  const trgInput = getElementById(`sl-edit-trg-${orderId}`);
+  const priceInput = getElementById(`sl-edit-price-${orderId}`);
 
   const orderLotSize = getCachedLotSizeForOrder(order);
   const lotsValue = lotsInput ? parseInt(lotsInput.value, 10) || 1 : 1;
@@ -1439,7 +1489,7 @@ async function saveSLOrder(orderId) {
   const newTrg = trgInput ? trgInput.value : (order.trigger_price || 0);
   const newPrice = priceInput ? priceInput.value : order.price;
 
-  const btn = document.getElementById(`sl-save-${orderId}`);
+  const btn = getElementById(`sl-save-${orderId}`);
   if (btn) { btn.textContent = '...'; btn.disabled = true; }
 
   const data = {
@@ -1469,7 +1519,7 @@ async function saveSLOrder(orderId) {
 
 async function exitAtMarket() {
   // Get selected orders or all orders
-  const checkboxes = document.querySelectorAll('.oa-sl-checkbox:checked');
+  const checkboxes = querySelectorAll('.oa-sl-checkbox:checked');
   const orderIds = checkboxes.length > 0
     ? Array.from(checkboxes).map(cb => cb.dataset.orderid)
     : state.slOrders.map(o => o.orderid);
@@ -1479,7 +1529,7 @@ async function exitAtMarket() {
     return;
   }
 
-  const btn = document.getElementById('oa-sl-exit-market');
+  const btn = getElementById('oa-sl-exit-market');
   if (btn) { btn.textContent = 'Executing...'; btn.disabled = true; }
 
   let successCount = 0;
@@ -1517,7 +1567,7 @@ async function exitAtMarket() {
 
 async function cancelAllSLOrders() {
   // Get selected orders or all orders
-  const checkboxes = document.querySelectorAll('.oa-sl-checkbox:checked');
+  const checkboxes = querySelectorAll('.oa-sl-checkbox:checked');
   const orderIds = checkboxes.length > 0
     ? Array.from(checkboxes).map(cb => cb.dataset.orderid)
     : state.slOrders.map(o => o.orderid);
@@ -1527,7 +1577,7 @@ async function cancelAllSLOrders() {
     return;
   }
 
-  const btn = document.getElementById('oa-sl-cancel-all');
+  const btn = getElementById('oa-sl-cancel-all');
   if (btn) { btn.textContent = 'Cancelling...'; btn.disabled = true; }
 
   let successCount = 0;
@@ -1560,7 +1610,7 @@ async function addSLOrder() {
     return;
   }
 
-  const netposEl = document.getElementById('oa-netpos');
+  const netposEl = getElementById('oa-netpos');
   const currentQty = netposEl ? parseInt(netposEl.dataset.qty || '0', 10) : 0;
 
   if (currentQty === 0) {
@@ -1569,7 +1619,7 @@ async function addSLOrder() {
   }
 
   // Get lots from the uncovered input (user can edit it, use absolute value)
-  const lotsInput = document.getElementById('oa-sl-remaining-lots');
+  const lotsInput = getElementById('oa-sl-remaining-lots');
   const lots = lotsInput ? Math.abs(parseInt(lotsInput.value, 10) || 0) : 0;
 
   if (lots <= 0) {
@@ -1586,7 +1636,7 @@ async function addSLOrder() {
   const limitPrice = state.optionLtp || 0;
 
   // Show edit form in the SL list (prepend a new order item)
-  const list = document.getElementById('oa-sl-list');
+  const list = getElementById('oa-sl-list');
   if (!list) return;
 
   // Create a new order form at the top of the list
@@ -1624,9 +1674,9 @@ async function addSLOrder() {
   list.insertAdjacentHTML('afterbegin', newOrderHtml);
 
   // Add event listeners
-  document.getElementById(`sl-place-${newOrderId}`)?.addEventListener('click', () => placeNewSLOrder(newOrderId, slAction));
-  document.getElementById(`sl-cancel-new-${newOrderId}`)?.addEventListener('click', () => {
-    const newItem = document.querySelector(`.oa-sl-new-order[data-orderid="${newOrderId}"]`);
+  getElementById(`sl-place-${newOrderId}`)?.addEventListener('click', () => placeNewSLOrder(newOrderId, slAction));
+  getElementById(`sl-cancel-new-${newOrderId}`)?.addEventListener('click', () => {
+    const newItem = querySelector(`.oa-sl-new-order[data-orderid="${newOrderId}"]`);
     if (newItem) newItem.remove();
   });
 }
@@ -1638,9 +1688,9 @@ async function placeNewSLOrder(newOrderId, slAction) {
     return;
   }
 
-  const lotsInput = document.getElementById(`sl-new-lots-${newOrderId}`);
-  const trgInput = document.getElementById(`sl-new-trg-${newOrderId}`);
-  const priceInput = document.getElementById(`sl-new-price-${newOrderId}`);
+  const lotsInput = getElementById(`sl-new-lots-${newOrderId}`);
+  const trgInput = getElementById(`sl-new-trg-${newOrderId}`);
+  const priceInput = getElementById(`sl-new-price-${newOrderId}`);
 
   const lots = lotsInput ? Math.abs(parseInt(lotsInput.value, 10) || 0) : 0;
   const triggerPrice = trgInput ? parseFloat(trgInput.value) || 0 : 0;
@@ -1658,7 +1708,7 @@ async function placeNewSLOrder(newOrderId, slAction) {
 
   const quantity = lots * (state.lotSize || 1);
 
-  const btn = document.getElementById(`sl-place-${newOrderId}`);
+  const btn = getElementById(`sl-place-${newOrderId}`);
   if (btn) { btn.textContent = 'Placing...'; btn.disabled = true; }
 
   const result = await apiCall('/api/v1/placeorder', {
@@ -1688,7 +1738,7 @@ async function placeResize() {
   const symbol = getActiveSymbol();
   if (!symbol || !state.selectedSymbol) return showNotification('No symbol selected', 'error');
 
-  const netposEl = document.getElementById('oa-netpos');
+  const netposEl = getElementById('oa-netpos');
   const isEditing = netposEl && netposEl.dataset.editing === 'true';
 
   // If not editing, target is ALWAYS 0 (Close Position)
@@ -1721,10 +1771,10 @@ async function placeResize() {
 }
 
 function initializeQuantityInput() {
-  const lotsInput = document.getElementById('oa-lots');
-  const lotsDecBtn = document.getElementById('oa-lots-dec');
-  const lotsIncBtn = document.getElementById('oa-lots-inc');
-  const lotsUpdateBtn = document.getElementById('oa-lots-update');
+  const lotsInput = getElementById('oa-lots');
+  const lotsDecBtn = getElementById('oa-lots-dec');
+  const lotsIncBtn = getElementById('oa-lots-inc');
+  const lotsUpdateBtn = getElementById('oa-lots-update');
 
   if (lotsInput && state.lotSize > 0) {
     // Set initial quantity to 1 * lot size
@@ -1754,7 +1804,7 @@ function validateQuantity() {
 
 // Simplified netpos validation - always valid in lots mode
 function validateNetposQuantity() {
-  const netposEl = document.getElementById('oa-netpos');
+  const netposEl = getElementById('oa-netpos');
   if (!netposEl) return true;
 
   const displayValue = parseInt(netposEl.value || '0', 10) || 0;
@@ -1764,7 +1814,7 @@ function validateNetposQuantity() {
 }
 
 function updateExpirySlider() {
-  const container = document.getElementById('oa-expiry-slider');
+  const container = getElementById('oa-expiry-slider');
   if (!container) return;
   container.innerHTML = expiryList.slice(0, 8).map(exp => {
     const formatted = exp.replace(/-/g, '').toUpperCase();
@@ -1778,11 +1828,11 @@ function updateExpirySlider() {
       updateExpirySlider();
 
       // Show loading on multiple elements
-      const strikeBtn = document.getElementById('oa-strike-btn');
-      const priceInput = document.getElementById('oa-price');
-      const orderBtn = document.getElementById('oa-order-btn');
-      const strikeCol = document.getElementById('oa-strike-col');
-      const ltpCol = document.getElementById('oa-ltp-col');
+      const strikeBtn = getElementById('oa-strike-btn');
+      const priceInput = getElementById('oa-price');
+      const orderBtn = getElementById('oa-order-btn');
+      const strikeCol = getElementById('oa-strike-col');
+      const ltpCol = getElementById('oa-ltp-col');
 
       strikeBtn?.classList.add('oa-loading');
       priceInput?.classList.add('oa-loading');
@@ -1811,7 +1861,7 @@ function updateExpirySlider() {
 }
 
 function updateStrikeDropdown() {
-  const list = document.getElementById('oa-strike-list');
+  const list = getElementById('oa-strike-list');
   if (!list) return;
   const optType = state.optionType;
   const isStrikeMode = state.strikeMode === 'strike';
@@ -1851,7 +1901,7 @@ function updateStrikeDropdown() {
 }
 
 function updateStrikeButton() {
-  const btn = document.getElementById('oa-strike-btn');
+  const btn = getElementById('oa-strike-btn');
   if (!btn) return;
   if (state.strikeMode === 'moneyness') {
     // Show only moneyness (ATM, ITM1, etc.) in moneyness mode
@@ -1862,7 +1912,7 @@ function updateStrikeButton() {
 }
 
 function updatePriceDisplay(forceUpdate = false) {
-  const el = document.getElementById('oa-price');
+  const el = getElementById('oa-price');
   if (!el) return;
 
   if (state.orderType === 'MARKET' || forceUpdate) {
@@ -1881,7 +1931,7 @@ function updatePriceDisplay(forceUpdate = false) {
 }
 
 function updateOrderButton() {
-  const btn = document.getElementById('oa-order-btn');
+  const btn = getElementById('oa-order-btn');
   if (!btn) return;
   const marginText = state.margin > 0 ? ` [₹${formatNumber(state.margin, 0)}]` : '';
   const displayQty = getDisplayQuantity();
@@ -1897,11 +1947,11 @@ function updateOrderButton() {
 }
 
 function toggleStrikeDropdown(show) {
-  const dd = document.getElementById('oa-strike-dropdown');
+  const dd = getElementById('oa-strike-dropdown');
   if (dd) dd.classList.toggle('hidden', !show);
 
   // Update hover text based on current mode
-  const updateBtn = document.getElementById('oa-update-strikes');
+  const updateBtn = getElementById('oa-update-strikes');
   if (updateBtn) {
     updateBtn.title = state.strikeMode === 'moneyness'
       ? 'Update Strikes and LTP'
@@ -1909,18 +1959,29 @@ function toggleStrikeDropdown(show) {
   }
 }
 
-// Inject the main UI
+// Inject the main UI with Shadow DOM
 function injectUI() {
   const container = document.createElement('div');
   container.id = 'openalgo-controls';
-  container.className = settings.uiMode === 'scalping' ? 'oa-container oa-scalping' : 'oa-container oa-quick';
+  
+  // Create Shadow DOM root with open mode to allow external styles if needed
+  shadowRoot = container.attachShadow({ mode: 'open' });
+  
+  // Inject styles FIRST into shadow root (before content)
+  injectStyles();
+  
+  // Create inner container for the UI
+  const innerContainer = document.createElement('div');
+  innerContainer.className = settings.uiMode === 'scalping' ? 'oa-container oa-scalping' : 'oa-container oa-quick';
 
   if (settings.uiMode === 'scalping') {
-    container.innerHTML = buildScalpingUI();
-    setupScalpingEvents(container);
+    innerContainer.innerHTML = buildScalpingUI();
+    shadowRoot.appendChild(innerContainer);
+    setupScalpingEvents(innerContainer);
   } else {
-    container.innerHTML = buildQuickUI();
-    setupQuickEvents(container);
+    innerContainer.innerHTML = buildQuickUI();
+    shadowRoot.appendChild(innerContainer);
+    setupQuickEvents(innerContainer);
   }
 
   makeDraggable(container);
@@ -2075,7 +2136,7 @@ function setupScalpingEvents(container) {
   // Symbol select - only fetch expiry when symbol changes
   container.querySelector('#oa-symbol-select')?.addEventListener('change', async (e) => {
     // Add loading animation to strike button during symbol change
-    const strikeBtn = document.getElementById('oa-strike-btn');
+    const strikeBtn = getElementById('oa-strike-btn');
     strikeBtn?.classList.add('oa-loading');
 
     await saveSettings({ activeSymbolId: e.target.value });
@@ -2134,7 +2195,7 @@ function setupScalpingEvents(container) {
 
   // Strike button
   container.querySelector('#oa-strike-btn')?.addEventListener('click', () => {
-    const dd = document.getElementById('oa-strike-dropdown');
+    const dd = getElementById('oa-strike-dropdown');
     const isHidden = dd.classList.contains('hidden');
     toggleStrikeDropdown(isHidden);
     if (isHidden && strikeChain.length === 0) fetchStrikeChain();
@@ -2143,7 +2204,7 @@ function setupScalpingEvents(container) {
   // Lots controls
   container.querySelector('#oa-lots-dec')?.addEventListener('click', () => {
     const symbol = getActiveSymbol();
-    const lotsInput = document.getElementById('oa-lots');
+    const lotsInput = getElementById('oa-lots');
 
     // Don't process if controls are disabled or in loading state
     if (!symbol || !lotsInput || lotsInput.classList.contains('oa-loading')) return;
@@ -2163,7 +2224,7 @@ function setupScalpingEvents(container) {
   });
   container.querySelector('#oa-lots-inc')?.addEventListener('click', () => {
     const symbol = getActiveSymbol();
-    const lotsInput = document.getElementById('oa-lots');
+    const lotsInput = getElementById('oa-lots');
 
     // Don't process if controls are disabled or in loading state
     if (!symbol || !lotsInput || lotsInput.classList.contains('oa-loading')) return;
@@ -2288,7 +2349,7 @@ function setupScalpingEvents(container) {
   const priceUpdateBtn = container.querySelector('#oa-price-update');
   if (priceUpdateBtn) priceUpdateBtn.title = 'Refresh price';
   priceUpdateBtn?.addEventListener('click', async () => {
-    const priceEl = document.getElementById('oa-price');
+    const priceEl = getElementById('oa-price');
     if (!priceEl) return;
 
     // Call quotes API to get latest price
@@ -2321,7 +2382,7 @@ function setupScalpingEvents(container) {
 
   // Net pos refresh functionality - double click on input to refresh
   container.querySelector('#oa-netpos')?.addEventListener('dblclick', () => {
-    if (!document.getElementById('oa-netpos').classList.contains('editable')) {
+    if (!getElementById('oa-netpos').classList.contains('editable')) {
       fetchOpenPosition();
     }
   });
@@ -2372,8 +2433,8 @@ function setupScalpingEvents(container) {
 
   // Net pos refresh button (↻) - always fetch openposition when clicked
   container.querySelector('#oa-netpos-update')?.addEventListener('click', () => {
-    const netposEl = document.getElementById('oa-netpos');
-    const updateBtn = document.getElementById('oa-netpos-update');
+    const netposEl = getElementById('oa-netpos');
+    const updateBtn = getElementById('oa-netpos-update');
 
     // If in edit mode, exit edit mode first
     if (netposEl && !netposEl.readOnly) {
@@ -2422,7 +2483,7 @@ function setupScalpingEvents(container) {
 
   // SL Panel Refresh
   container.querySelector('#oa-sl-refresh')?.addEventListener('click', async () => {
-    const btn = document.getElementById('oa-sl-refresh');
+    const btn = getElementById('oa-sl-refresh');
     if (btn) btn.classList.add('spinning');
 
     // Fetch position and SL orders
@@ -2538,33 +2599,39 @@ function toggleTheme() {
   state.theme = state.theme === 'dark' ? 'light' : 'dark';
   applyTheme(state.theme);
   saveSettings({ theme: state.theme });
-  const btn = document.getElementById('oa-theme-btn');
+  const btn = getElementById('oa-theme-btn');
   if (btn) btn.textContent = state.theme === 'dark' ? '☀️' : '🌙';
 }
 
 function applyTheme(theme) {
-  const container = document.getElementById('openalgo-controls');
-  if (!container) return;
-  if (theme === 'light') {
-    container.classList.add('oa-light-theme');
-    container.classList.remove('oa-dark-theme');
-  } else {
-    container.classList.add('oa-dark-theme');
-    container.classList.remove('oa-light-theme');
+  state.theme = theme;
+  if (shadowRoot) {
+    const innerContainer = shadowRoot.querySelector('.oa-container');
+    if (innerContainer) {
+      if (theme === 'light') {
+        innerContainer.classList.add('oa-light-theme');
+        innerContainer.classList.remove('oa-dark-theme');
+      } else {
+        innerContainer.classList.add('oa-dark-theme');
+        innerContainer.classList.remove('oa-light-theme');
+      }
+    }
   }
 }
 
 // Refresh panel
 function toggleRefreshPanel() {
-  const panel = document.getElementById('oa-refresh-panel');
+  const panel = getElementById('oa-refresh-panel');
   if (!panel) return;
   const isHidden = panel.classList.contains('hidden');
   if (isHidden) {
     // Hide other panels directly
-    const ordersDropdown = document.getElementById('oa-orders-dropdown');
+    const ordersDropdown = getElementById('oa-orders-dropdown');
     if (ordersDropdown) ordersDropdown.classList.add('hidden');
-    const settingsPanel = document.getElementById('oa-settings-panel');
+    const settingsPanel = getElementById('oa-settings-panel');
     if (settingsPanel) settingsPanel.classList.add('hidden');
+    const slPanel = getElementById('oa-sl-panel');
+    if (slPanel) slPanel.classList.add('hidden');
 
     panel.innerHTML = buildRefreshPanel();
     setupRefreshEvents(panel);
@@ -2642,26 +2709,26 @@ function setupRefreshEvents(panel) {
 
 // Expiry slider scroll
 function scrollExpiry(direction) {
-  const slider = document.getElementById('oa-expiry-slider');
+  const slider = getElementById('oa-expiry-slider');
   if (slider) slider.scrollBy({ left: direction * 80, behavior: 'smooth' });
 }
 
 // Loading indicators
 function showLoadingIndicator(area) {
-  const el = document.getElementById(`oa-${area === 'underlying' ? 'underlying-ltp' : area}`);
+  const el = getElementById(`oa-${area === 'underlying' ? 'underlying-ltp' : area}`);
   if (el) el.classList.add('oa-loading');
 }
 
 function hideLoadingIndicator(area) {
-  const el = document.getElementById(`oa-${area === 'underlying' ? 'underlying-ltp' : area}`);
+  const el = getElementById(`oa-${area === 'underlying' ? 'underlying-ltp' : area}`);
   if (el) el.classList.remove('oa-loading');
 }
 
 // Strike dropdown control functions
 async function updateStrikesAndQuotes() {
-  const btn = document.getElementById('oa-update-strikes');
-  const strikeCol = document.getElementById('oa-strike-col');
-  const ltpCol = document.getElementById('oa-ltp-col');
+  const btn = getElementById('oa-update-strikes');
+  const strikeCol = getElementById('oa-strike-col');
+  const ltpCol = getElementById('oa-ltp-col');
 
   // Always show loading on button
   btn?.classList.add('oa-loading');
@@ -2699,11 +2766,11 @@ async function toggleStrikeMode() {
   await saveSettings({ strikeMode: state.strikeMode });
 
   // Update mode button label
-  const btn = document.getElementById('oa-mode-toggle');
+  const btn = getElementById('oa-mode-toggle');
   if (btn) btn.textContent = state.strikeMode === 'moneyness' ? 'M' : 'S';
 
   // Update hover text for update button
-  const updateBtn = document.getElementById('oa-update-strikes');
+  const updateBtn = getElementById('oa-update-strikes');
   if (updateBtn) {
     updateBtn.title = state.strikeMode === 'moneyness'
       ? 'Update Strikes and LTP'
@@ -2724,7 +2791,7 @@ async function extendStrikes() {
     const symbol = getActiveSymbol();
     if (!symbol || !state.selectedExpiry || !strikeInterval || !cachedATMStrike) return;
 
-    const btn = document.getElementById('oa-extend-strikes');
+    const btn = getElementById('oa-extend-strikes');
     if (btn) btn.classList.add('oa-loading');
 
     state.extendLevel++;
@@ -2805,15 +2872,17 @@ function buildDynamicSymbol(strike) {
 
 // Settings panel
 function toggleSettingsPanel() {
-  const panel = document.getElementById('oa-settings-panel');
+  const panel = getElementById('oa-settings-panel');
   if (!panel) return;
   const isHidden = panel.classList.contains('hidden');
   if (isHidden) {
     // Hide other panels directly
-    const ordersDropdown = document.getElementById('oa-orders-dropdown');
+    const ordersDropdown = getElementById('oa-orders-dropdown');
     if (ordersDropdown) ordersDropdown.classList.add('hidden');
-    const refreshPanel = document.getElementById('oa-refresh-panel');
+    const refreshPanel = getElementById('oa-refresh-panel');
     if (refreshPanel) refreshPanel.classList.add('hidden');
+    const slPanel = getElementById('oa-sl-panel');
+    if (slPanel) slPanel.classList.add('hidden');
 
     panel.innerHTML = buildSettingsPanel();
     setupSettingsEvents(panel);
@@ -2943,7 +3012,7 @@ function setupSettingsEvents(panel) {
     setupSettingsEvents(panel);
 
     // Update main symbol dropdown
-    const select = document.getElementById('oa-symbol-select');
+    const select = getElementById('oa-symbol-select');
     if (select) {
       select.innerHTML = settings.symbols.map(s => `<option value="${s.id}" ${s.id === settings.activeSymbolId ? 'selected' : ''}>${s.symbol}</option>`).join('') + (settings.symbols.length === 0 ? '<option value="">Add symbol in settings</option>' : '');
     }
@@ -2963,7 +3032,7 @@ function setupSettingsEvents(panel) {
       setupSettingsEvents(panel);
 
       // Update main symbol dropdown
-      const select = document.getElementById('oa-symbol-select');
+      const select = getElementById('oa-symbol-select');
       if (select) {
         select.innerHTML = settings.symbols.map(s => `<option value="${s.id}" ${s.id === settings.activeSymbolId ? 'selected' : ''}>${s.symbol}</option>`).join('') + (settings.symbols.length === 0 ? '<option value="">Add symbol in settings</option>' : '');
       }
@@ -3007,7 +3076,7 @@ function setupSettingsEvents(panel) {
         panel.innerHTML = buildSettingsPanel();
         setupSettingsEvents(panel);
         // Update symbol dropdown in main UI
-        const select = document.getElementById('oa-symbol-select');
+        const select = getElementById('oa-symbol-select');
         if (select) {
           select.innerHTML = settings.symbols.map(s => `<option value="${s.id}" ${s.id === settings.activeSymbolId ? 'selected' : ''}>${s.symbol}</option>`).join('');
         }
@@ -3079,21 +3148,21 @@ function setupSettingsEvents(panel) {
     showNotification('Settings saved!', 'success');
 
     // Apply UI mode change without full reload - rebuild UI
-    if (modeChanged) {
-      const container = document.getElementById('openalgo-controls');
-      if (container) {
+    if (modeChanged && shadowRoot) {
+      const innerContainer = shadowRoot.querySelector('.oa-container');
+      if (innerContainer) {
         // Update container class to fix width immediately
-        container.className = newSettings.uiMode === 'scalping' ? 'oa-container oa-scalping' : 'oa-container oa-quick';
-        container.innerHTML = newSettings.uiMode === 'scalping' ? buildScalpingUI() : buildQuickUI();
+        innerContainer.className = newSettings.uiMode === 'scalping' ? 'oa-container oa-scalping' : 'oa-container oa-quick';
+        innerContainer.innerHTML = newSettings.uiMode === 'scalping' ? buildScalpingUI() : buildQuickUI();
         if (newSettings.uiMode === 'scalping') {
-          setupScalpingEvents(container);
+          setupScalpingEvents(innerContainer);
           applyTheme(state.theme);
           if (settings.apiKey && settings.hostUrl) {
             fetchExpiry();
             startDataRefresh();
           }
         } else {
-          setupQuickEvents(container);
+          setupQuickEvents(innerContainer);
         }
       }
     }
@@ -3101,7 +3170,7 @@ function setupSettingsEvents(panel) {
   });
 }
 
-// Draggable functionality
+// Draggable functionality - works with Shadow DOM
 function makeDraggable(el) {
   let isDragging = false, offsetX, offsetY;
   el.style.position = 'fixed';
@@ -3110,7 +3179,12 @@ function makeDraggable(el) {
   el.style.left = '20px';
 
   el.addEventListener('mousedown', (e) => {
-    if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'BUTTON') return;
+    // Get the actual target element (works with Shadow DOM)
+    const target = e.composedPath ? e.composedPath()[0] : e.target;
+    // Allow dragging only on drag handle or non-interactive elements
+    const isDragHandle = target.classList && target.classList.contains('oa-drag-handle');
+    const isInteractive = target.tagName === 'INPUT' || target.tagName === 'SELECT' || target.tagName === 'BUTTON' || target.tagName === 'A';
+    if (!isDragHandle && isInteractive) return;
     isDragging = true;
     offsetX = e.clientX - el.getBoundingClientRect().left;
     offsetY = e.clientY - el.getBoundingClientRect().top;
@@ -3127,8 +3201,10 @@ function makeDraggable(el) {
   document.addEventListener('mouseup', () => isDragging = false);
 }
 
-// Inject CSS styles
+// Inject CSS styles into Shadow DOM
 function injectStyles() {
+  if (!shadowRoot) return;
+  
   const style = document.createElement('style');
   style.textContent = `
     /* Base container - Compact sizing */
@@ -3194,6 +3270,23 @@ function injectStyles() {
     .oa-light-theme .oa-lot-btn:disabled { background: #ccc !important; color: #999 !important; }
     .oa-lot-btn:disabled { background: #333 !important; color: #666 !important; cursor: not-allowed !important; }
     .oa-light-theme .oa-lot-btn:disabled { background: #ccc !important; color: #999 !important; }
+
+    /* Button theme overrides for light mode */
+    .oa-light-theme .oa-btn { background: #f0f0f0 !important; color: #333 !important; border: 1px solid #ccc !important; }
+    .oa-light-theme .oa-btn:hover { background: #e0e0e0 !important; }
+    .oa-light-theme .oa-btn.primary { background: #5c6bc0 !important; color: #fff !important; border-color: #5c6bc0 !important; }
+    .oa-light-theme .oa-btn.success { background: #4caf50 !important; color: #fff !important; border-color: #4caf50 !important; }
+    .oa-light-theme .oa-btn.warning { background: #ff9800 !important; color: #000 !important; border-color: #ff9800 !important; }
+    .oa-light-theme .oa-btn.error { background: #f44336 !important; color: #fff !important; border-color: #f44336 !important; }
+    .oa-light-theme .oa-btn.info { background: #2196f3 !important; color: #fff !important; border-color: #2196f3 !important; }
+
+    /* Refresh panel button theming */
+    .oa-refresh-panel .oa-btn { background: #222 !important; color: #fff !important; border: 1px solid #333 !important; }
+    .oa-refresh-panel .oa-btn.success { background: #00c853 !important; color: #fff !important; border-color: #00c853 !important; }
+    .oa-refresh-panel .oa-btn.primary { background: #5c6bc0 !important; color: #fff !important; border-color: #5c6bc0 !important; }
+    .oa-light-theme .oa-refresh-panel .oa-btn { background: #f0f0f0 !important; color: #333 !important; border-color: #ccc !important; }
+    .oa-light-theme .oa-refresh-panel .oa-btn.success { background: #4caf50 !important; color: #fff !important; border-color: #4caf50 !important; }
+    .oa-light-theme .oa-refresh-panel .oa-btn.primary { background: #5c6bc0 !important; color: #fff !important; border-color: #5c6bc0 !important; }
     .oa-lots input { width: 80px !important; background: #111 !important; color: #fff !important; border: 1px solid #333 !important; border-radius: 4px !important; text-align: center !important; padding: 5px 5px !important; font-size: 10px !important; height: 24px !important; box-sizing: border-box !important; }
     .oa-lots input:disabled { background: #222 !important; color: #666 !important; cursor: not-allowed !important; }
     .oa-lots input:disabled { background: #222 !important; color: #666 !important; cursor: not-allowed !important; }
@@ -3389,6 +3482,7 @@ function injectStyles() {
     .openalgo-notification { position: fixed; bottom: 20px; right: 20px; padding: 10px 16px; border-radius: 6px; font-weight: 600; z-index: 10001; animation: slideIn 0.3s ease; font-size: 11px; }
     .openalgo-notification.success { background: #00c853; color: #fff; }
     .openalgo-notification.error { background: #ff5252; color: #fff; }
+    .openalgo-notification.info { background: #2196F3; color: #fff; }
     .openalgo-notification.fadeOut { opacity: 0; transition: opacity 0.5s; }
     @keyframes slideIn { from { transform: translateX(100px); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
 
@@ -3466,14 +3560,14 @@ function injectStyles() {
     .oa-light-theme .oa-tab-btn.active { background: #e0e0e0 !important; color: #333 !important; }
     .oa-light-theme .oa-empty-state { color: #888 !important; }
   `;
-  document.head.appendChild(style);
+  shadowRoot.appendChild(style);
 }
 
 // ============ Order Management Functions ============
 
 function toggleOrdersDropdown(show) {
-  const dd = document.getElementById('oa-orders-dropdown');
-  const btn = document.getElementById('oa-orders-btn');
+  const dd = getElementById('oa-orders-dropdown');
+  const btn = getElementById('oa-orders-btn');
   if (!dd) return;
 
   const isShow = show !== undefined ? show : dd.classList.contains('hidden');
@@ -3482,10 +3576,12 @@ function toggleOrdersDropdown(show) {
 
   if (isShow) {
     // Hide other panels directly without calling their toggle functions
-    const settingsPanel = document.getElementById('oa-settings-panel');
+    const settingsPanel = getElementById('oa-settings-panel');
     if (settingsPanel) settingsPanel.classList.add('hidden');
-    const refreshPanel = document.getElementById('oa-refresh-panel');
+    const refreshPanel = getElementById('oa-refresh-panel');
     if (refreshPanel) refreshPanel.classList.add('hidden');
+    const slPanel = getElementById('oa-sl-panel');
+    if (slPanel) slPanel.classList.add('hidden');
 
     // Refresh orders when opening
     fetchOrders();
@@ -3651,7 +3747,7 @@ async function fetchOrders() {
   if (!settings.apiKey) return;
 
   state.ordersLoading = true;
-  const list = document.getElementById('oa-orders-list');
+  const list = getElementById('oa-orders-list');
   if (list) list.innerHTML = '<div class="oa-loading" style="height: 50px;"></div>';
 
   const result = await apiCall('/api/v1/orderbook', {});
@@ -3671,7 +3767,7 @@ async function fetchOrders() {
 }
 
 function renderOrders() {
-  const list = document.getElementById('oa-orders-list');
+  const list = getElementById('oa-orders-list');
   if (!list) return;
 
   if (state.orders.length === 0) {
@@ -3771,7 +3867,7 @@ function renderOrders() {
 }
 
 function enterEditMode(orderId) {
-  const item = document.getElementById(`order-${orderId}`);
+  const item = getElementById(`order-${orderId}`);
   if (!item) return;
 
   const order = state.orders.find(o => o.orderid === orderId);
@@ -3810,17 +3906,17 @@ function enterEditMode(orderId) {
     </div>
   `;
 
-  document.getElementById(`save-edit-${orderId}`)?.addEventListener('click', () => saveEditOrder(orderId));
-  document.getElementById(`cancel-edit-${orderId}`)?.addEventListener('click', () => renderOrders());
+  getElementById(`save-edit-${orderId}`)?.addEventListener('click', () => saveEditOrder(orderId));
+  getElementById(`cancel-edit-${orderId}`)?.addEventListener('click', () => renderOrders());
 }
 
 async function saveEditOrder(orderId) {
   const order = state.orders.find(o => o.orderid === orderId);
   if (!order) return;
 
-  const lotsInput = document.getElementById(`edit-lots-${orderId}`);
-  const priceInput = document.getElementById(`edit-price-${orderId}`);
-  const trgInput = document.getElementById(`edit-trg-${orderId}`);
+  const lotsInput = getElementById(`edit-lots-${orderId}`);
+  const priceInput = getElementById(`edit-price-${orderId}`);
+  const trgInput = getElementById(`edit-trg-${orderId}`);
 
   // Get lot size for this specific order from cache
   const orderLotSize = getCachedLotSizeForOrder(order);
@@ -3830,7 +3926,7 @@ async function saveEditOrder(orderId) {
   const newPrice = priceInput ? priceInput.value : order.price;
   const newTrg = trgInput ? trgInput.value : (order.trigger_price || 0);
 
-  const btn = document.getElementById(`save-edit-${orderId}`);
+  const btn = getElementById(`save-edit-${orderId}`);
   if (btn) { btn.textContent = '...'; btn.disabled = true; }
 
   const data = {
@@ -3874,7 +3970,7 @@ async function cancelOrder(orderId, strategy) {
 }
 
 async function cancelAllOrders() {
-  const btn = document.getElementById('oa-cancel-all-btn');
+  const btn = getElementById('oa-cancel-all-btn');
   if (btn) btn.textContent = 'Cancelling...';
 
   const result = await apiCall('/api/v1/cancelallorder', {
@@ -3898,15 +3994,15 @@ function switchBookTab(tabName) {
   state.activeBookTab = tabName;
 
   // Update tab buttons
-  document.querySelectorAll('.oa-tab-btn').forEach(btn => {
+  querySelectorAll('.oa-tab-btn').forEach(btn => {
     btn.classList.toggle('active', btn.dataset.tab === tabName);
   });
 
   // Update tab content visibility
-  document.querySelectorAll('.oa-tab-content').forEach(content => {
+  querySelectorAll('.oa-tab-content').forEach(content => {
     content.classList.add('hidden');
   });
-  const activeContent = document.getElementById(`oa-tab-${tabName}`);
+  const activeContent = getElementById(`oa-tab-${tabName}`);
   if (activeContent) activeContent.classList.remove('hidden');
 
   // Fetch data for the active tab
@@ -3925,7 +4021,7 @@ async function fetchTradebook() {
   if (!settings.apiKey) return;
 
   state.tradesLoading = true;
-  const list = document.getElementById('oa-tradebook-list');
+  const list = getElementById('oa-tradebook-list');
   if (list) list.innerHTML = '<div class="oa-loading" style="height: 50px;"></div>';
 
   const result = await apiCall('/api/v1/tradebook', {});
@@ -3945,7 +4041,7 @@ async function fetchTradebook() {
 }
 
 function renderTradebook() {
-  const list = document.getElementById('oa-tradebook-list');
+  const list = getElementById('oa-tradebook-list');
   if (!list) return;
 
   if (state.trades.length === 0) {
@@ -3991,7 +4087,7 @@ function renderTradebook() {
 }
 
 function updateTradebookStats() {
-  const statsEl = document.getElementById('oa-tradebook-stats');
+  const statsEl = getElementById('oa-tradebook-stats');
   if (!statsEl) return;
 
   const total = state.trades.length;
@@ -4007,7 +4103,7 @@ async function fetchPositions() {
   if (!settings.apiKey) return;
 
   state.positionsLoading = true;
-  const list = document.getElementById('oa-positions-list');
+  const list = getElementById('oa-positions-list');
   if (list) list.innerHTML = '<div class="oa-loading" style="height: 50px;"></div>';
 
   const result = await apiCall('/api/v1/positionbook', {});
@@ -4026,7 +4122,7 @@ async function fetchPositions() {
 }
 
 function renderPositions() {
-  const list = document.getElementById('oa-positions-list');
+  const list = getElementById('oa-positions-list');
   if (!list) return;
 
   // Filter positions based on state.positionsFilter (open/closed)
@@ -4262,15 +4358,15 @@ function enterPositionEditMode(item) {
 
 // Helper function to set up position edit event handlers
 function setupPositionEditHandlers(item, editId, symbol, exchange, product, qty, orderLotSize, currentLots, isLong, isShort) {
-  const lotsInput = document.getElementById(`edit-pos-lots-${editId}`);
-  const pctTrigger = document.getElementById(`pos-pct-trigger-${editId}`);
-  const pctPopup = document.getElementById(`pos-pct-popup-${editId}`);
-  const addBtn = document.getElementById(`pos-mode-add-${editId}`);
-  const exitBtn = document.getElementById(`pos-mode-exit-${editId}`);
-  const pctContainer = document.getElementById(`pos-pct-buttons-${editId}`);
-  const customBtn = document.getElementById(`pos-custom-btn-${editId}`);
-  const actionBtn = document.getElementById(`save-pos-edit-${editId}`);
-  const cancelBtn = document.getElementById(`cancel-pos-edit-${editId}`);
+  const lotsInput = getElementById(`edit-pos-lots-${editId}`);
+  const pctTrigger = getElementById(`pos-pct-trigger-${editId}`);
+  const pctPopup = getElementById(`pos-pct-popup-${editId}`);
+  const addBtn = getElementById(`pos-mode-add-${editId}`);
+  const exitBtn = getElementById(`pos-mode-exit-${editId}`);
+  const pctContainer = getElementById(`pos-pct-buttons-${editId}`);
+  const customBtn = getElementById(`pos-custom-btn-${editId}`);
+  const actionBtn = getElementById(`save-pos-edit-${editId}`);
+  const cancelBtn = getElementById(`cancel-pos-edit-${editId}`);
 
   if (!lotsInput || !actionBtn) return; // Guard against missing elements
 
@@ -4401,7 +4497,7 @@ function setupPositionEditHandlers(item, editId, symbol, exchange, product, qty,
     customBtn.classList.add('editing');
     customBtn.innerHTML = `<input type="number" id="pos-custom-input-${editId}" class="oa-pos-custom-input" placeholder="${sign}%" min="1" max="500" autofocus>`;
 
-    const customInput = document.getElementById(`pos-custom-input-${editId}`);
+    const customInput = getElementById(`pos-custom-input-${editId}`);
     customInput.focus();
 
     // Auto-calculate on input with 100ms debounce
@@ -4468,7 +4564,7 @@ function setupPositionEditHandlers(item, editId, symbol, exchange, product, qty,
 }
 
 async function resizePosition(symbol, exchange, product, currentQty, lotSize, editId) {
-  const lotsInput = document.getElementById(`edit-pos-lots-${editId}`);
+  const lotsInput = getElementById(`edit-pos-lots-${editId}`);
   if (!lotsInput) return;
 
   // Target is now a signed value (negative for short position target)
@@ -4482,7 +4578,7 @@ async function resizePosition(symbol, exchange, product, currentQty, lotSize, ed
   const isShort = currentQty < 0;
 
   // Update button to show loading state
-  const btn = document.getElementById(`save-pos-edit-${editId}`);
+  const btn = getElementById(`save-pos-edit-${editId}`);
   const originalText = btn ? btn.textContent : 'Resize';
   if (btn) { btn.textContent = 'Placing...'; btn.disabled = true; }
 
@@ -4509,8 +4605,8 @@ async function resizePosition(symbol, exchange, product, currentQty, lotSize, ed
 }
 
 function updatePositionsStats() {
-  const statsEl = document.getElementById('oa-positions-stats');
-  const pnlEl = document.getElementById('oa-positions-pnl');
+  const statsEl = getElementById('oa-positions-stats');
+  const pnlEl = getElementById('oa-positions-pnl');
   if (!statsEl) return;
 
   const openPositions = state.positions.filter(p => parseInt(p.quantity, 10) !== 0);
@@ -4534,7 +4630,7 @@ function updatePositionsStats() {
 }
 
 async function closeAllPositions() {
-  const btn = document.getElementById('oa-close-all-btn');
+  const btn = getElementById('oa-close-all-btn');
   if (btn) btn.textContent = 'Closing...';
 
   const result = await apiCall('/api/v1/closeposition', {
@@ -4595,7 +4691,7 @@ async function squareOffPosition(symbol, exchange, product) {
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'injectButtons') {
     // Only re-initialize if not already done and no existing UI
-    if (!isInitialized && !document.getElementById('openalgo-controls')) {
+    if (!isInitialized && !getElementById('openalgo-controls')) {
       init();
     }
     sendResponse({ success: true });

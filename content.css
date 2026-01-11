@@ -71,6 +71,10 @@
   background-color: #F44336;
 }
 
+.openalgo-notification.info {
+  background-color: #2196F3;
+}
+
 .openalgo-notification.fadeOut {
   opacity: 0;
 }
