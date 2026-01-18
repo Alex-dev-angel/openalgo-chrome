@@ -1360,6 +1360,12 @@ function renderSLPanel() {
     posInfoEl.textContent = `${positionType} ${currentLots} lots`;
   }
 
+  // Update header label with selected symbol
+  const headerLabel = getElementById('oa-sl-header-label');
+  if (headerLabel) {
+    headerLabel.textContent = state.selectedSymbol || 'Stop Loss Orders';
+  }
+
   // Calculate covered lots
   let coveredLots = 0;
   state.slOrders.forEach(o => {
@@ -1963,13 +1969,13 @@ function toggleStrikeDropdown(show) {
 function injectUI() {
   const container = document.createElement('div');
   container.id = 'openalgo-controls';
-  
+
   // Create Shadow DOM root with open mode to allow external styles if needed
   shadowRoot = container.attachShadow({ mode: 'open' });
-  
+
   // Inject styles FIRST into shadow root (before content)
   injectStyles();
-  
+
   // Create inner container for the UI
   const innerContainer = document.createElement('div');
   innerContainer.className = settings.uiMode === 'scalping' ? 'oa-container oa-scalping' : 'oa-container oa-quick';
@@ -2093,7 +2099,7 @@ function buildScalpingUI() {
     </div>
     <div id="oa-sl-panel" class="oa-sl-panel hidden">
       <div class="oa-sl-header">
-        <span>Stop Loss Orders</span>
+        <span id="oa-sl-header-label">Stop Loss Orders</span>
         <span id="oa-sl-position-info" class="oa-sl-position-info">--</span>
       </div>
       <div id="oa-sl-list" class="oa-orders-list"></div>
@@ -3204,7 +3210,7 @@ function makeDraggable(el) {
 // Inject CSS styles into Shadow DOM
 function injectStyles() {
   if (!shadowRoot) return;
-  
+
   const style = document.createElement('style');
   style.textContent = `
     /* Base container - Compact sizing */
